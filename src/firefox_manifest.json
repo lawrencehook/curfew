@@ -21,5 +21,10 @@
   },
   "web_accessible_resources": [
     "blocked/main.html"
-  ]
+  ],
+  "data_collection_permissions": {
+    "localStorage": {
+      "reason": "Stores site time limits and daily usage data locally. No data is transmitted."
+    }
+  }
 }
