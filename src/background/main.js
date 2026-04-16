@@ -13,8 +13,8 @@ if (browser && !browser.browserAction && browser.action) {
  ***************/
 
 const FLUSH_INTERVAL = 10000;
-const EXTENSION_BONUS = 300;
-const MAX_EXTENSIONS = 3;
+const EXTENSION_BONUS = 60;
+const MAX_EXTENSIONS = 1;
 const PRUNE_DAYS = 30;
 const DEFAULT_SITES = [
   { domain: 'twitter.com', daily_limit_minutes: 30 },
