@@ -25,9 +25,7 @@
   "browser_specific_settings": {
     "gecko": {
       "data_collection_permissions": {
-        "localStorage": {
-          "reason": "Stores site time limits and daily usage data locally. No data is transmitted."
-        }
+        "required": false
       }
     }
   }
