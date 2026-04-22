@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Site — Curb</title>
+    <link rel="stylesheet" type="text/css" href="main.css">
+    <script defer src="/shared/utils.js"></script>
+    <script defer src="main.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <header class="page-header">
+        <div class="brand">
+          <svg class="logo" viewBox="0 0 48 48" width="20" height="20">
+            <rect x="10" y="2" width="28" height="4" rx="1.5" fill="rgba(255,255,255,0.6)"/>
+            <rect x="10" y="42" width="28" height="4" rx="1.5" fill="rgba(255,255,255,0.6)"/>
+            <path d="M14 6 L14 10 C14 18 20 22 24 24 C20 26 14 30 14 38 L14 42 L34 42 L34 38 C34 30 28 26 24 24 C28 22 34 18 34 10 L34 6 Z" fill="rgba(255,255,255,0.8)"/>
+            <path d="M18 38 C18 32 22 29 24 27 C26 29 30 32 30 38 Z" fill="#c9a84e"/>
+            <path d="M17 8 C17 14 21 18 24 20 C27 18 31 14 31 8 Z" fill="rgba(255,255,255,0.35)"/>
+          </svg>
+          <span class="brand-name">Curb</span>
+        </div>
+        <h1 id="domain"></h1>
+      </header>
+
+      <main id="content" class="hidden">
+        <section class="card">
+          <div class="section-head">
+            <h2>Limits</h2>
+            <div class="add-limit">
+              <select id="limit-type">
+                <option value="daily">Daily cap</option>
+                <option value="bucket">Rate (leaky bucket)</option>
+              </select>
+              <button id="add-limit-btn" class="btn btn-primary">Add limit</button>
+            </div>
+          </div>
+          <div id="limits-list"></div>
+        </section>
+
+        <section class="card coming-soon">
+          <div class="section-head">
+            <h2>Access gates</h2>
+            <span class="badge">coming soon</span>
+          </div>
+          <ul class="gate-placeholder">
+            <li>Password prompt</li>
+            <li>Friction delay (wait N seconds)</li>
+            <li>Typing challenge</li>
+          </ul>
+        </section>
+
+        <section class="card danger-zone">
+          <div class="section-head">
+            <h2>Danger zone</h2>
+          </div>
+          <div class="danger-row">
+            <div>
+              <div class="danger-title">Remove site</div>
+              <div class="danger-desc">Stops tracking and forgets all configured limits.</div>
+            </div>
+            <button id="remove-btn" class="btn btn-danger">Remove site</button>
+          </div>
+        </section>
+      </main>
+
+      <div id="not-found" class="hidden empty">
+        Site not found.
+      </div>
+    </div>
+  </body>
+</html>

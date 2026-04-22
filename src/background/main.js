@@ -15,7 +15,6 @@ if (browser && !browser.browserAction && browser.action) {
 const FLUSH_INTERVAL = 10000;
 const EXTENSION_BONUS = 60;
 const MAX_EXTENSIONS = 1;
-const PRUNE_DAYS = 30;
 const DEFAULT_SITES = [];
 
 /***************
@@ -24,11 +23,13 @@ const DEFAULT_SITES = [];
 
 let sites = [];
 let usage = {};
+let buckets = {}; // `${domain}:${limitIdx}` → {tokens, lastRefillMs, cap}
 let dateKey = getDateKey();
 let activeTabId = null;
 let trackedDomain = null;
 let ticker = null;
 let dirty = false;
+let bucketsDirty = false;
 
 /***************
  * Utilities
@@ -65,12 +66,28 @@ function badgeText(sec) {
   return m < 100 ? m + 'm' : Math.floor(m / 60) + 'h';
 }
 
-function badgeColor(sec, limitSec) {
-  const r = sec / limitSec;
-  if (r >= 0.95) return '#b5636a';
-  if (r >= 0.8) return '#c4856b';
-  if (r >= 0.5) return '#c9a84e';
+function badgeColor(ratio) {
+  if (ratio >= 0.95) return '#b5636a';
+  if (ratio >= 0.8) return '#c4856b';
+  if (ratio >= 0.5) return '#c9a84e';
   return '#7a9e7e';
+}
+
+/***************
+ * Migration
+ ***************/
+
+function migrateSites(raw) {
+  return raw.map((s) => {
+    if (Array.isArray(s.limits)) return s;
+    if (typeof s.daily_limit_minutes === 'number') {
+      return {
+        domain: s.domain,
+        limits: [{ type: 'daily', minutes: s.daily_limit_minutes }],
+      };
+    }
+    return { domain: s.domain, limits: [] };
+  });
 }
 
 /***************
@@ -78,38 +95,53 @@ function badgeColor(sec, limitSec) {
  ***************/
 
 async function load() {
-  const data = await browser.storage.local.get(['sites', 'usage']);
-  sites = data.sites || DEFAULT_SITES.slice();
-  const allUsage = data.usage || {};
+  const data = await browser.storage.local.get(['sites', 'usage', 'buckets']);
+  const raw = data.sites || DEFAULT_SITES.slice();
+  sites = migrateSites(raw);
+  const migrated = JSON.stringify(sites) !== JSON.stringify(raw);
 
-  // Prune entries older than PRUNE_DAYS
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - PRUNE_DAYS);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  for (const k of Object.keys(allUsage)) {
-    if (k < cutoffStr) delete allUsage[k];
+  const allUsage = data.usage || {};
+  usage = allUsage[dateKey] || {};
+  buckets = data.buckets || {};
+
+  if (migrated || !data.sites) {
+    await browser.storage.local.set({ sites });
   }
 
-  usage = allUsage[dateKey] || {};
-  if (!data.sites) await browser.storage.local.set({ sites });
-
-  pruneExtKeys(cutoffStr);
+  pruneExtKeys();
+  pruneBuckets();
 }
 
-async function pruneExtKeys(cutoffStr) {
+async function pruneExtKeys() {
   const all = await browser.storage.local.get(null);
-  const stale = Object.keys(all).filter(k =>
-    k.startsWith('ext_') && k.slice(4, 14) < cutoffStr
+  const stale = Object.keys(all).filter(
+    (k) => k.startsWith('ext_') && k.slice(4, 14) !== dateKey
   );
   if (stale.length) await browser.storage.local.remove(stale);
 }
 
+function pruneBuckets() {
+  const valid = new Set();
+  for (const s of sites) {
+    for (let i = 0; i < s.limits.length; i++) {
+      if (s.limits[i].type === 'bucket') valid.add(bucketKey(s.domain, i));
+    }
+  }
+  for (const k of Object.keys(buckets)) {
+    if (!valid.has(k)) {
+      delete buckets[k];
+      bucketsDirty = true;
+    }
+  }
+}
+
 async function flush() {
-  if (!dirty) return;
+  if (!dirty && !bucketsDirty) return;
   const { usage: allUsage = {} } = await browser.storage.local.get('usage');
   allUsage[dateKey] = usage;
-  await browser.storage.local.set({ usage: allUsage });
+  await browser.storage.local.set({ usage: allUsage, buckets });
   dirty = false;
+  bucketsDirty = false;
 }
 
 /***************
@@ -122,16 +154,89 @@ async function getExtensionCount(domain) {
   return data[key] || 0;
 }
 
-async function effectiveLimit(site) {
-  const ext = await getExtensionCount(site.domain);
-  return site.daily_limit_minutes * 60 + ext * EXTENSION_BONUS;
+/***************
+ * Bucket state
+ ***************/
+
+function bucketKey(domain, idx) {
+  return domain + ':' + idx;
+}
+
+function refillBucket(domain, idx, lim) {
+  const key = bucketKey(domain, idx);
+  const cap = lim.capacityMin * 60;
+  const windowSec = lim.windowMin * 60;
+  const rate = windowSec > 0 ? cap / windowSec : 0;
+  const now = Date.now();
+  let state = buckets[key];
+  if (!state || state.cap !== cap) {
+    state = { tokens: cap, lastRefillMs: now, cap };
+    buckets[key] = state;
+    bucketsDirty = true;
+    return state;
+  }
+  const elapsed = (now - state.lastRefillMs) / 1000;
+  if (elapsed > 0) {
+    state.tokens = Math.min(cap, state.tokens + elapsed * rate);
+    state.lastRefillMs = now;
+    bucketsDirty = true;
+  }
+  return state;
+}
+
+function drainBucket(domain, idx, lim) {
+  const state = refillBucket(domain, idx, lim);
+  state.tokens = Math.max(0, state.tokens - 1);
+  bucketsDirty = true;
+  return state;
+}
+
+/***************
+ * Limit evaluation
+ ***************/
+
+async function evalLimits(site, domain) {
+  const ext = await getExtensionCount(domain);
+  const results = [];
+  for (let i = 0; i < site.limits.length; i++) {
+    const lim = site.limits[i];
+    if (lim.type === 'daily') {
+      const sec = usage[domain] || 0;
+      const limitSec = lim.minutes * 60 + ext * EXTENSION_BONUS;
+      results.push({
+        idx: i,
+        type: 'daily',
+        blocked: limitSec > 0 && sec >= limitSec,
+        progress: limitSec > 0 ? sec / limitSec : 1,
+        current: sec,
+        limit: limitSec,
+      });
+    } else if (lim.type === 'bucket') {
+      const state = refillBucket(domain, i, lim);
+      const cap = lim.capacityMin * 60;
+      results.push({
+        idx: i,
+        type: 'bucket',
+        blocked: cap > 0 && state.tokens <= 0,
+        progress: cap > 0 ? 1 - state.tokens / cap : 1,
+        current: cap - state.tokens,
+        limit: cap,
+      });
+    }
+  }
+  return results;
+}
+
+function tightestProgress(results) {
+  if (!results.length) return 0;
+  return Math.max(...results.map((r) => r.progress));
 }
 
 /***************
  * Tracking
  ***************/
 
-function tick() {
+async function tick() {
   if (!trackedDomain) return;
 
   // Day rollover
@@ -144,24 +249,30 @@ function tick() {
   usage[trackedDomain] = (usage[trackedDomain] || 0) + 1;
   dirty = true;
 
-  const sec = usage[trackedDomain];
   const site = findSite(trackedDomain);
   if (!site) return;
 
+  // Drain bucket limits
+  for (let i = 0; i < site.limits.length; i++) {
+    if (site.limits[i].type === 'bucket') {
+      drainBucket(trackedDomain, i, site.limits[i]);
+    }
+  }
+
+  const results = await evalLimits(site, trackedDomain);
+  const sec = usage[trackedDomain];
   browser.browserAction.setBadgeText({ text: badgeText(sec) });
   browser.browserAction.setBadgeBackgroundColor({
-    color: badgeColor(sec, site.daily_limit_minutes * 60),
+    color: badgeColor(tightestProgress(results)),
   });
 
-  // Check limit (async)
-  effectiveLimit(site).then((limit) => {
-    if (sec >= limit && trackedDomain === site.domain) {
-      blockTab(trackedDomain, sec, limit);
-    }
-  });
+  const blocked = results.find((r) => r.blocked);
+  if (blocked && trackedDomain === site.domain) {
+    blockTab(trackedDomain, blocked);
+  }
 }
 
-function startTracking(domain) {
+async function startTracking(domain) {
   if (trackedDomain === domain) return;
   stopTracking();
   trackedDomain = domain;
@@ -169,9 +280,10 @@ function startTracking(domain) {
   const sec = usage[domain] || 0;
   const site = findSite(domain);
   if (site) {
+    const results = await evalLimits(site, domain);
     browser.browserAction.setBadgeText({ text: badgeText(sec) });
     browser.browserAction.setBadgeBackgroundColor({
-      color: badgeColor(sec, site.daily_limit_minutes * 60),
+      color: badgeColor(tightestProgress(results)),
     });
   }
 
@@ -192,13 +304,14 @@ function stopTracking() {
  * Blocking
  ***************/
 
-function blockTab(domain, spent, limit) {
+function blockTab(domain, result) {
   const tabId = activeTabId;
   stopTracking();
   const p = new URLSearchParams({
     domain,
-    spent: String(spent),
-    limit: String(limit),
+    type: result.type,
+    spent: String(Math.floor(result.current)),
+    limit: String(Math.floor(result.limit)),
   });
   browser.tabs.update(tabId, {
     url: browser.runtime.getURL('blocked/main.html?' + p),
@@ -225,14 +338,14 @@ async function evaluate(tabId) {
       return;
     }
 
-    const sec = usage[site.domain] || 0;
-    const limit = await effectiveLimit(site);
-    if (sec >= limit) {
-      blockTab(site.domain, sec, limit);
+    const results = await evalLimits(site, site.domain);
+    const blocked = results.find((r) => r.blocked);
+    if (blocked) {
+      blockTab(site.domain, blocked);
       return;
     }
 
-    startTracking(site.domain);
+    await startTracking(site.domain);
   } catch {
     stopTracking();
   }
@@ -261,6 +374,7 @@ browser.windows.onFocusChanged.addListener((wid) => {
 browser.storage.onChanged.addListener((changes) => {
   if (changes.sites) {
     sites = changes.sites.newValue || [];
+    pruneBuckets();
     if (activeTabId) evaluate(activeTabId);
   }
 });
@@ -273,13 +387,13 @@ setInterval(flush, FLUSH_INTERVAL);
 
 browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'getStatus') {
-    sendResponse({ sites, usage, dateKey });
-    return false;
+    evalStatusAll().then((status) => sendResponse(status));
+    return true;
   }
 
   if (msg.type === 'extendTime') {
     const site = findSite(msg.domain);
-    if (!site) {
+    if (!site || !site.limits.some((l) => l.type === 'daily')) {
       sendResponse({ success: false });
       return false;
     }
@@ -294,9 +408,17 @@ browser.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ success: true, remaining: MAX_EXTENSIONS - 1 - count });
       });
     });
-    return true; // async response
+    return true;
   }
 });
+
+async function evalStatusAll() {
+  const evals = {};
+  for (const site of sites) {
+    evals[site.domain] = await evalLimits(site, site.domain);
+  }
+  return { sites, usage, dateKey, evals };
+}
 
 /***************
  * Init

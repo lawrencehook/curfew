@@ -94,3 +94,7 @@ h1 {
   opacity: 0.3;
   cursor: not-allowed;
 }
+
+.hidden {
+  display: none !important;
+}
