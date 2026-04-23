@@ -117,66 +117,6 @@ body {
   transition: width 0.4s ease, background 0.4s ease;
 }
 
-/* ── Card actions (hidden until click) ──────────────────── */
-.site-actions {
-  display: none;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 8px;
-  padding-top: 7px;
-  border-top: 1px solid var(--border);
-}
-
-.site-card.expanded .site-actions {
-  display: flex;
-}
-
-.site-card.expanded {
-  cursor: default;
-}
-
-.limit-edit {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 10.5px;
-  color: var(--text-tertiary);
-}
-
-.limit-input {
-  width: 42px;
-  padding: 2px 3px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  font-size: 10.5px;
-  text-align: center;
-  color: var(--text-secondary);
-  background: var(--bg);
-  transition: border-color 0.15s;
-  cursor: text;
-}
-
-.limit-input:focus {
-  outline: none;
-  border-color: var(--primary);
-}
-
-.btn-remove {
-  background: none;
-  border: none;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  font-size: 10.5px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
-}
-
-.btn-remove:hover {
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
 /* ── Empty state ────────────────────────────────────────── */
 .empty-state {
   padding: 28px 16px;

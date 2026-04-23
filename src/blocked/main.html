@@ -17,16 +17,11 @@
         <path d="M18 38 C18 32 22 29 24 27 C26 29 30 32 30 38 Z" fill="#c9a84e"/>
         <path d="M17 8 C17 14 21 18 24 20 C27 18 31 14 31 8 Z" fill="#c4bde0" opacity="0.5"/>
       </svg>
-      <h1>Time's Up</h1>
-      <p class="message">
-        You've spent <strong id="spent"></strong> on
-        <strong id="domain"></strong> today.
-      </p>
-      <p class="sub">
-        Your daily limit was <span id="limit"></span>.
-      </p>
+      <h1 id="title">Time's Up</h1>
+      <p class="message" id="message"></p>
+      <p class="sub" id="sub"></p>
       <div class="actions">
-        <button id="extend-btn" class="btn btn-secondary">+1 Minute</button>
+        <button id="extend-btn" class="btn btn-secondary hidden">+1 Minute</button>
       </div>
     </div>
   </body>

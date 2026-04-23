@@ -1,7 +1,6 @@
-let state = { sites: [], usage: {}, dateKey: '' };
+let state = { sites: [], usage: {}, dateKey: '', evals: {} };
 let refreshTimer = null;
 let lastSiteKey = '';
-let expandedDomain = null;
 
 /***************
  * Data
@@ -25,26 +24,24 @@ function render() {
     empty.classList.remove('hidden');
     qs('#total-time').textContent = '0m today';
     lastSiteKey = '';
-    expandedDomain = null;
     return;
   }
 
   empty.classList.add('hidden');
 
-  // Only rebuild DOM when site list structure changes
-  const siteKey = state.sites.map(s => s.domain + ':' + s.daily_limit_minutes).join(',');
+  const siteKey = state.sites.map((s) => s.domain).join(',');
   if (siteKey !== lastSiteKey) {
     lastSiteKey = siteKey;
     buildCards(list);
   }
 
-  // Update dynamic values without touching innerHTML
   let totalSeconds = 0;
   for (const site of state.sites) {
     const sec = state.usage[site.domain] || 0;
     totalSeconds += sec;
-    const limitSec = site.daily_limit_minutes * 60;
-    const pct = Math.min(100, (sec / limitSec) * 100);
+    const evals = state.evals[site.domain] || [];
+    const maxProg = evals.length ? Math.max(...evals.map((e) => e.progress)) : 0;
+    const pct = Math.min(100, maxProg * 100);
     const min = Math.floor(sec / 60);
     const color = statusColor(pct);
 
@@ -54,7 +51,7 @@ function render() {
     card.style.borderLeftColor = color;
     qs('.progress-fill', card).style.width = pct + '%';
     qs('.progress-fill', card).style.background = color;
-    qs('.site-time', card).textContent = min + ' / ' + site.daily_limit_minutes + ' min';
+    qs('.site-time', card).textContent = min + 'm today';
   }
 
   const totalMin = Math.floor(totalSeconds / 60);
@@ -64,9 +61,8 @@ function render() {
 function buildCards(list) {
   let html = '';
   for (const site of state.sites) {
-    const isExpanded = expandedDomain === site.domain;
     html += `
-      <div class="site-card${isExpanded ? ' expanded' : ''}" data-site="${esc(site.domain)}">
+      <div class="site-card" data-site="${esc(site.domain)}">
         <div class="site-header">
           <span class="site-domain">${esc(site.domain)}</span>
           <span class="site-time"></span>
@@ -74,53 +70,20 @@ function buildCards(list) {
         <div class="progress-track">
           <div class="progress-fill"></div>
         </div>
-        <div class="site-actions">
-          <label class="limit-edit">
-            Limit:
-            <input type="number" class="limit-input" data-domain="${esc(site.domain)}"
-                   value="${site.daily_limit_minutes}" min="0" max="1440">
-            min/day
-          </label>
-          <button class="btn-remove" data-domain="${esc(site.domain)}">Remove</button>
-        </div>
       </div>`;
   }
   list.innerHTML = html;
 
   for (const card of qsa('.site-card', list)) {
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('.site-actions')) return;
-      toggleCard(card.dataset.site, list);
-    });
-  }
-  for (const btn of qsa('.btn-remove', list)) {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      removeSite(btn.dataset.domain);
-    });
-  }
-  for (const input of qsa('.limit-input', list)) {
-    input.addEventListener('click', (e) => e.stopPropagation());
-    input.addEventListener('change', () =>
-      updateLimit(input.dataset.domain, parseInt(input.value, 10))
-    );
+    card.addEventListener('click', () => openEdit(card.dataset.site));
   }
 }
 
-function toggleCard(domain, list) {
-  const wasExpanded = expandedDomain === domain;
-
-  for (const card of qsa('.site-card', list)) {
-    card.classList.remove('expanded');
-  }
-
-  if (!wasExpanded) {
-    const card = qs(`[data-site="${domain}"]`, list);
-    card.classList.add('expanded');
-    expandedDomain = domain;
-  } else {
-    expandedDomain = null;
-  }
+function openEdit(domain) {
+  browser.tabs.create({
+    url: browser.runtime.getURL('edit/main.html?domain=' + encodeURIComponent(domain)),
+  });
+  window.close();
 }
 
 /***************
@@ -138,26 +101,24 @@ async function addSite(raw, limit) {
   if (!domain || !domain.includes('.')) return;
   if (state.sites.some((s) => s.domain === domain)) return;
 
-  state.sites.push({ domain, daily_limit_minutes: limit });
+  state.sites.push({
+    domain,
+    limits: [{ type: 'daily', minutes: limit }],
+  });
   await browser.storage.local.set({ sites: state.sites });
   lastSiteKey = '';
   render();
 }
 
-async function removeSite(domain) {
-  if (expandedDomain === domain) expandedDomain = null;
-  state.sites = state.sites.filter((s) => s.domain !== domain);
-  await browser.storage.local.set({ sites: state.sites });
-  lastSiteKey = '';
-  render();
-}
-
-async function updateLimit(domain, minutes) {
-  if (isNaN(minutes) || minutes < 0) return;
-  const site = state.sites.find((s) => s.domain === domain);
-  if (!site) return;
-  site.daily_limit_minutes = minutes;
-  await browser.storage.local.set({ sites: state.sites });
+async function prefillDomain() {
+  try {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    if (!tabs[0] || !tabs[0].url) return;
+    const host = new URL(tabs[0].url).hostname.replace(/^www\./, '');
+    if (host && host.includes('.')) {
+      qs('#domain-input').value = host;
+    }
+  } catch {}
 }
 
 /***************
@@ -168,7 +129,12 @@ fetchStatus();
 refreshTimer = setInterval(fetchStatus, 1000);
 
 qs('#toggle-add').addEventListener('click', () => {
-  qs('#add-form').classList.toggle('hidden');
+  const form = qs('#add-form');
+  const wasHidden = form.classList.contains('hidden');
+  form.classList.toggle('hidden');
+  if (wasHidden) {
+    prefillDomain().then(() => qs('#domain-input').focus());
+  }
 });
 
 qs('#add-btn').addEventListener('click', () => {
