@@ -38,21 +38,31 @@ function render() {
   const list = qs('#limits-list');
   list.innerHTML = '';
 
-  if (!site.limits.length) {
+  if (site.limits.length) {
+    site.limits.forEach((lim, idx) => {
+      const el = document.createElement('div');
+      el.className = 'limit-row';
+      el.innerHTML = renderLimit(lim, idx);
+      attachLimitHandlers(el, idx);
+      list.appendChild(el);
+    });
+  } else {
     const empty = document.createElement('div');
     empty.className = 'empty';
     empty.textContent = 'No limits configured. This site will be tracked but never blocked.';
     list.appendChild(empty);
-    return;
   }
 
-  site.limits.forEach((lim, idx) => {
-    const el = document.createElement('div');
-    el.className = 'limit-row';
-    el.innerHTML = renderLimit(lim, idx);
-    attachLimitHandlers(el, idx);
-    list.appendChild(el);
-  });
+  renderAddLimit();
+}
+
+function renderAddLimit() {
+  const select = qs('#limit-type');
+  const hasDaily = site.limits.some((l) => l.type === 'daily');
+  const dailyOpt = qs('option[value="daily"]', select);
+  dailyOpt.disabled = hasDaily;
+  dailyOpt.textContent = hasDaily ? 'Daily cap (already added)' : 'Daily cap';
+  if (hasDaily && select.value === 'daily') select.value = 'bucket';
 }
 
 function renderLimit(lim, idx) {
@@ -123,9 +133,14 @@ function attachLimitHandlers(el, idx) {
 
 async function addLimit(type) {
   let lim;
-  if (type === 'daily') lim = { type: 'daily', minutes: 30 };
-  else if (type === 'bucket') lim = { type: 'bucket', capacityMin: 5, windowMin: 30 };
-  else return;
+  if (type === 'daily') {
+    if (site.limits.some((l) => l.type === 'daily')) return;
+    lim = { type: 'daily', minutes: 30 };
+  } else if (type === 'bucket') {
+    lim = { type: 'bucket', capacityMin: 5, windowMin: 30 };
+  } else {
+    return;
+  }
   site.limits.push(lim);
   await save();
   render();

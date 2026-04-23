@@ -123,6 +123,10 @@ body {
   border-color: var(--primary);
 }
 
+.add-limit select option:disabled {
+  color: var(--text-tertiary);
+}
+
 /* ── Limit rows ─────────────────────────────────────────── */
 .limit-row {
   display: grid;
@@ -229,17 +233,6 @@ body {
   align-self: start;
 }
 
-.btn-danger {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid transparent;
-}
-
-.btn-danger:hover {
-  background: var(--danger);
-  color: #fff;
-}
-
 /* ── Coming soon section ────────────────────────────────── */
 .coming-soon {
   opacity: 0.7;
@@ -261,29 +254,10 @@ body {
   border: 1px dashed var(--border-strong);
 }
 
-/* ── Danger zone ────────────────────────────────────────── */
-.danger-zone {
-  border-color: #e9d6d9;
-}
-
-.danger-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.danger-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text);
-  margin-bottom: 3px;
-}
-
-.danger-desc {
-  font-size: 12px;
-  color: var(--text-tertiary);
+/* ── Footer actions ─────────────────────────────────────── */
+.footer-actions {
+  margin-top: 8px;
+  text-align: center;
 }
 
 /* ── Empty / utility ────────────────────────────────────── */
