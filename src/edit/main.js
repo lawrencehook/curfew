@@ -3,6 +3,8 @@ const targetDomain = params.get('domain') || '';
 
 let sites = [];
 let site = null;
+let evals = [];
+let statusTimer = null;
 
 /***************
  * Load / Save
@@ -22,6 +24,16 @@ async function load() {
   qs('#domain').textContent = site.domain;
   qs('#content').classList.remove('hidden');
   render();
+  pollStatus();
+  statusTimer = setInterval(pollStatus, 1000);
+}
+
+async function pollStatus() {
+  try {
+    const status = await browser.runtime.sendMessage({ type: 'getStatus' });
+    evals = (status && status.evals && status.evals[targetDomain]) || [];
+    updateStatus();
+  } catch {}
 }
 
 async function save() {
@@ -42,6 +54,7 @@ function render() {
     site.limits.forEach((lim, idx) => {
       const el = document.createElement('div');
       el.className = 'limit-row';
+      el.dataset.idx = String(idx);
       el.innerHTML = renderLimit(lim, idx);
       attachLimitHandlers(el, idx);
       list.appendChild(el);
@@ -54,6 +67,7 @@ function render() {
   }
 
   renderAddLimit();
+  updateStatus();
 }
 
 function renderAddLimit() {
@@ -67,6 +81,11 @@ function renderAddLimit() {
 
 function renderLimit(lim, idx) {
   const removeBtn = `<button class="btn btn-ghost btn-remove" data-idx="${idx}">Remove</button>`;
+  const status = `
+    <div class="limit-status">
+      <div class="status-track"><div class="status-fill"></div></div>
+      <span class="status-text">—</span>
+    </div>`;
 
   if (lim.type === 'daily') {
     return `
@@ -75,6 +94,7 @@ function renderLimit(lim, idx) {
         <input type="number" class="fld-minutes" value="${lim.minutes}" min="0" max="1440">
         <span>min / day</span>
       </div>
+      ${status}
       <div class="limit-desc">Blocks after total daily time on this site exceeds the cap.</div>
       ${removeBtn}`;
   }
@@ -88,11 +108,52 @@ function renderLimit(lim, idx) {
         <input type="number" class="fld-window" value="${lim.windowMin}" min="1" max="1440">
         <span>min window</span>
       </div>
+      ${status}
       <div class="limit-desc">Grants up to <strong>${lim.capacityMin}</strong> min of access, refilling continuously over a <strong>${lim.windowMin}</strong> min window.</div>
       ${removeBtn}`;
   }
 
   return `<div class="limit-kind">Unknown limit</div>${removeBtn}`;
+}
+
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  if (sec < 60) return sec + 's';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+function updateStatus() {
+  const list = qs('#limits-list');
+  if (!list || !site) return;
+
+  for (let i = 0; i < site.limits.length; i++) {
+    const row = qs(`.limit-row[data-idx="${i}"]`, list);
+    if (!row) continue;
+    const e = evals[i];
+    const fill = qs('.status-fill', row);
+    const text = qs('.status-text', row);
+    if (!fill || !text) continue;
+
+    if (!e) {
+      fill.style.width = '0%';
+      text.textContent = '—';
+      continue;
+    }
+
+    const pct = Math.min(100, Math.max(0, e.progress * 100));
+    fill.style.width = pct + '%';
+    fill.style.background = statusColor(pct);
+
+    if (e.type === 'daily') {
+      text.textContent = `${fmtDuration(e.current)} used today`;
+    } else if (e.type === 'bucket') {
+      const remaining = Math.max(0, e.limit - e.current);
+      text.textContent = `${fmtDuration(remaining)} available`;
+    }
+  }
 }
 
 function attachLimitHandlers(el, idx) {
@@ -168,5 +229,9 @@ qs('#add-limit-btn').addEventListener('click', () => {
 });
 
 qs('#remove-btn').addEventListener('click', removeSite);
+
+window.addEventListener('unload', () => {
+  if (statusTimer) clearInterval(statusTimer);
+});
 
 load();

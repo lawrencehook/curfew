@@ -134,6 +134,7 @@ body {
   grid-template-areas:
     "kind   remove"
     "fields remove"
+    "status status"
     "desc   desc";
   gap: 6px 12px;
   align-items: center;
@@ -181,6 +182,37 @@ body {
 .limit-fields span {
   color: var(--text-secondary);
   font-size: 12.5px;
+}
+
+.limit-status {
+  grid-area: status;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.status-track {
+  flex: 1;
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.status-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: var(--border-strong);
+  transition: width 0.4s ease, background 0.4s ease;
+}
+
+.status-text {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .limit-desc {
