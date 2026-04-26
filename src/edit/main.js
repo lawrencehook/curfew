@@ -7,6 +7,7 @@ const EXPORT_FORMAT = 'curb-export-v1';
 
 let policies = [];
 let ruleEvals = {};
+let todayUsage = {};
 let statusTimer = null;
 
 /***************
@@ -34,6 +35,7 @@ async function pollStatus() {
     const status = await browser.runtime.sendMessage({ type: 'getStatus' });
     if (!status) return;
     ruleEvals = status.ruleEvals || {};
+    todayUsage = status.usage || {};
     updateStatus();
   } catch {}
 }
@@ -443,10 +445,12 @@ function renderPolicyDomains(p) {
     const row = document.createElement('label');
     row.className = 'domain-row' + (disabledReason ? ' disabled' : '');
     row.htmlFor = id;
+    row.dataset.domain = d;
     row.innerHTML = `
       <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} ${disabledReason ? 'disabled' : ''}>
       <span class="domain-name">${esc(d)}</span>
       ${disabledReason ? `<span class="domain-note">${esc(disabledReason)}</span>` : ''}
+      ${checked ? `<span class="domain-time">—</span>` : ''}
     `;
     const cb = qs('input', row);
     cb.addEventListener('change', async () => {
@@ -533,6 +537,13 @@ function updateStatus() {
   for (const row of qsa('#rules-list .limit-row')) {
     const id = row.dataset.ruleId;
     applyStatus(qs('.status-fill', row), qs('.status-text', row), ruleEvals[id]);
+  }
+  // Policy view: per-domain time spent today
+  for (const row of qsa('#policy-domains .domain-row')) {
+    const t = qs('.domain-time', row);
+    if (!t) continue;
+    const sec = todayUsage[row.dataset.domain] || 0;
+    t.textContent = `${fmtDuration(sec)} today`;
   }
 }
 
