@@ -292,10 +292,6 @@ function checkIpRateLimit(ip) {
   );
 }
 
-function decrementIpRateLimit(ip) {
-  _decrementRateLimit('ip_rate_limits', shortHash(ip));
-}
-
 function pruneExpiredIpRateLimits() {
   return _pruneExpiredRateLimits('ip_rate_limits', config.IP_RATE_LIMIT_WINDOW_MS, 'IP rate limit');
 }
@@ -324,6 +320,5 @@ module.exports = {
   decrementEmailRateLimit,
   pruneExpiredEmailRateLimits,
   checkIpRateLimit,
-  decrementIpRateLimit,
   pruneExpiredIpRateLimits,
 };

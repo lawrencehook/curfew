@@ -492,10 +492,6 @@ body {
   margin-top: 4px;
 }
 
-.limit-status.standalone {
-  margin-top: 12px;
-}
-
 .status-track {
   flex: 1;
   height: 5px;
