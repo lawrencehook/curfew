@@ -55,7 +55,7 @@ function ruleKindLabel(rule) {
   return '';
 }
 
-function ruleStat(e, rule) {
+function ruleStat(e) {
   if (!e) return '—';
   if (e.type === 'daily') {
     return `${fmtMin(e.current)} / ${fmtMin(e.limit)}`;
@@ -134,7 +134,7 @@ function renderPolicies() {
         const pct = Math.min(100, Math.max(0, e.progress * 100));
         fill.style.width = pct + '%';
         fill.style.background = statusColor(pct);
-        text.textContent = ruleStat(e, r);
+        text.textContent = ruleStat(e);
         if (e.progress > tightest) tightest = e.progress;
       } else {
         fill.style.width = '0%';
