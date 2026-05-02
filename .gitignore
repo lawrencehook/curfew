@@ -2,3 +2,4 @@ src/manifest.json
 .DS_Store
 src/web-ext-artifacts/
 extension.zip
+dist/
