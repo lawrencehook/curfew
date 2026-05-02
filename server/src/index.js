@@ -82,7 +82,7 @@ function runCleanup() {
 }
 
 function start() {
-  const required = ['JWT_SECRET', 'EMAIL_FROM'];
+  const required = ['JWT_SECRET', 'EMAIL_FROM', 'S3_BUCKET'];
   const missing = required.filter(key => !config[key]);
   if (missing.length) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);

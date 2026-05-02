@@ -1,8 +1,8 @@
 // End-to-end smoke test for the auth + sync flow.
 //
 // Boots the Express app on an ephemeral port against a temp SQLite file
-// and a stubbed email service, then exercises the same paths a real
-// extension client takes. Intended to be runnable with `npm test`.
+// (login codes + rate limits) and stubbed email + S3 services, then
+// exercises the same paths a real extension client takes.
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,16 +11,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// Env must be set before requiring the app — config.js reads via getters,
-// but better-sqlite3 grabs DATA_DIR on the first getDb() call.
+// Env must be set before requiring the app.
 process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
 process.env.EMAIL_FROM = 'test@example.com';
+process.env.S3_BUCKET = 'test-bucket';
 process.env.AWS_ACCESS_KEY_ID = 'x';
 process.env.AWS_SECRET_ACCESS_KEY = 'x';
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'curb-smoke-'));
 process.env.DATA_DIR = tmpDir;
 
-// Stub the email service so we capture the sent code instead of hitting SES.
+// Stub the email service.
 let lastCode = null;
 const emailPath = require.resolve('../src/services/email');
 require.cache[emailPath] = {
@@ -30,6 +30,32 @@ require.cache[emailPath] = {
   exports: {
     sendLoginCodeEmail: async (_email, code) => {
       lastCode = code;
+    },
+  },
+};
+
+// Stub the S3 service. In-memory map keyed by email, mimicking
+// optimistic-concurrency semantics via ETags.
+const s3Store = new Map();
+let etagCounter = 0;
+const s3Path = require.resolve('../src/services/s3');
+require.cache[s3Path] = {
+  id: s3Path,
+  filename: s3Path,
+  loaded: true,
+  exports: {
+    getDocument: async (email) => {
+      const entry = s3Store.get(email.toLowerCase());
+      return entry ? { ...entry.doc, etag: entry.etag } : null;
+    },
+    putDocument: async (email, doc, opts = {}) => {
+      const k = email.toLowerCase();
+      const existing = s3Store.get(k);
+      if (opts.ifNoneMatch === '*' && existing) return { conflict: true };
+      if (opts.ifMatch && (!existing || existing.etag !== opts.ifMatch)) return { conflict: true };
+      const etag = `"e${++etagCounter}"`;
+      s3Store.set(k, { doc, etag });
+      return { ok: true, etag };
     },
   },
 };

@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { v4: uuidv4 } = require('uuid');
 const Database = require('better-sqlite3');
 const config = require('../config');
 
 /***************
  * Database setup
+ *
+ * SQLite holds only short-lived ephemeral state: login codes and rate-limit
+ * counters. Sync documents live in S3 (see services/s3.js).
  ***************/
 
 let db = null;
@@ -23,13 +25,6 @@ function getDb() {
   db.pragma('journal_mode = WAL');
 
   db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
     CREATE TABLE IF NOT EXISTS login_codes (
       email TEXT PRIMARY KEY,
       code_hash TEXT NOT NULL,
@@ -37,14 +32,6 @@ function getDb() {
       attempts INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       ip TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS documents (
-      user_id TEXT PRIMARY KEY,
-      policies_json TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS email_rate_limits (
@@ -88,24 +75,6 @@ function shortHash(value) {
 
 function hashCode(code) {
   return sha256(code);
-}
-
-/***************
- * Users
- ***************/
-
-function getOrCreateUserByEmail(email) {
-  const lower = email.toLowerCase();
-  const d = getDb();
-  const existing = d.prepare('SELECT * FROM users WHERE email = ?').get(lower);
-  if (existing) return existing;
-  const id = uuidv4();
-  d.prepare('INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)').run(id, lower, Date.now());
-  return { id, email: lower, created_at: Date.now() };
-}
-
-function getUserByEmail(email) {
-  return getDb().prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase()) || null;
 }
 
 /***************
@@ -168,52 +137,6 @@ function pruneExpiredLoginCodes() {
     console.log(`Pruned ${result.changes} expired login codes`);
   }
   return result.changes;
-}
-
-/***************
- * Documents (sync)
- ***************/
-
-function getDocument(userId) {
-  return getDb().prepare('SELECT * FROM documents WHERE user_id = ?').get(userId) || null;
-}
-
-function putDocument(userId, policiesJson, expectedVersion) {
-  // Optimistic concurrency: succeeds only when expectedVersion matches.
-  // Returns { ok: true, version } on success, or { ok: false, current: { policies, version, updated_at } } on conflict.
-  const d = getDb();
-  const existing = d.prepare('SELECT * FROM documents WHERE user_id = ?').get(userId);
-
-  if (!existing) {
-    if (expectedVersion !== 0) {
-      return { ok: false, current: null };
-    }
-    const now = Date.now();
-    d.prepare(`
-      INSERT INTO documents (user_id, policies_json, version, updated_at)
-      VALUES (?, ?, 1, ?)
-    `).run(userId, policiesJson, now);
-    return { ok: true, version: 1, updated_at: now };
-  }
-
-  if (existing.version !== expectedVersion) {
-    return {
-      ok: false,
-      current: {
-        policies_json: existing.policies_json,
-        version: existing.version,
-        updated_at: existing.updated_at,
-      },
-    };
-  }
-
-  const newVersion = existing.version + 1;
-  const now = Date.now();
-  d.prepare(`
-    UPDATE documents SET policies_json = ?, version = ?, updated_at = ?
-    WHERE user_id = ?
-  `).run(policiesJson, newVersion, now, userId);
-  return { ok: true, version: newVersion, updated_at: now };
 }
 
 /***************
@@ -302,18 +225,10 @@ module.exports = {
   closeDatabase,
   getDb,
 
-  // Users
-  getOrCreateUserByEmail,
-  getUserByEmail,
-
   // Login codes
   createLoginCode,
   consumeLoginCode,
   pruneExpiredLoginCodes,
-
-  // Sync documents
-  getDocument,
-  putDocument,
 
   // Rate limits
   checkEmailRateLimit,

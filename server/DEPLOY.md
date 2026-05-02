@@ -123,6 +123,17 @@ cd ~/github
 git clone git@github.com:lawrencehook/curb.git
 ```
 
+### Confirm S3 access
+
+Sync documents live in `s3://curb-extension/curb/<email>.json`. Confirm the IAM user behind the existing AWS creds has these permissions on the bucket:
+
+```
+s3:GetObject     arn:aws:s3:::curb-extension/curb/*
+s3:PutObject     arn:aws:s3:::curb-extension/curb/*
+```
+
+(`HeadObject` isn't strictly required — `GetObject` covers the existence check.)
+
 ### Create the server `.env`
 
 ```bash
@@ -135,13 +146,14 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=<reuse RYS creds>
 AWS_SECRET_ACCESS_KEY=<reuse RYS creds>
 EMAIL_FROM=curb_noreply@lawrencehook.com
+S3_BUCKET=curb-extension
 DATA_DIR=/home/ec2-user/curb-data
 EOF
 chmod 600 .env
 mkdir -p /home/ec2-user/curb-data
 ```
 
-`DATA_DIR` lives outside the git checkout on purpose — `git checkout -- .` in the deploy script would otherwise clobber `storage.db` if it sat under `server/data/`.
+`DATA_DIR` lives outside the git checkout on purpose — `git checkout -- .` in the deploy script would otherwise clobber `storage.db` if it sat under `server/data/`. (Note: `storage.db` now only holds login codes and rate-limit counters — sync documents are in S3.)
 
 ### Apply the nginx update
 
@@ -192,7 +204,9 @@ No nginx changes needed unless you alter routing.
 
 ## 5. Backups
 
-`storage.db` is the only stateful file. To snapshot:
+Sync documents live in `s3://curb-extension/curb/`. Enable [S3 versioning](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html) on the bucket if you want history; AWS handles durability and accidental-overwrite recovery from there.
+
+`storage.db` holds only ephemeral state (login codes + rate limits). It's recreatable — losing it just means anyone with an in-flight code has to request a fresh one. If you still want a snapshot:
 
 ```bash
 sqlite3 /home/ec2-user/curb-data/storage.db ".backup /home/ec2-user/curb-data/backup-$(date +%F).db"

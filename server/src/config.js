@@ -24,6 +24,10 @@ module.exports = {
   get AWS_REGION() { return process.env.AWS_REGION || 'us-east-1'; },
   get EMAIL_FROM() { return process.env.EMAIL_FROM; },
 
+  // AWS S3 (sync documents)
+  get S3_BUCKET() { return process.env.S3_BUCKET; },
+  get S3_PREFIX() { return process.env.S3_PREFIX || 'curb'; },
+
   // File paths
   get DATA_DIR() { return process.env.DATA_DIR || './data'; },
 };

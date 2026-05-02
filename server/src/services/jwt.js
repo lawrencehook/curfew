@@ -1,8 +1,8 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
-function generateSessionToken({ userId, email }) {
-  const payload = { sub: userId, email: email.toLowerCase() };
+function generateSessionToken({ email }) {
+  const payload = { email: email.toLowerCase() };
   const options = { expiresIn: `${config.SESSION_TOKEN_LIFETIME_DAYS}d` };
   return jwt.sign(payload, config.JWT_SECRET, options);
 }
@@ -10,7 +10,7 @@ function generateSessionToken({ userId, email }) {
 function verifySessionToken(token) {
   try {
     const decoded = jwt.verify(token, config.JWT_SECRET);
-    return { valid: true, userId: decoded.sub, email: decoded.email };
+    return { valid: true, email: decoded.email };
   } catch (err) {
     return { valid: false, error: err.message };
   }
@@ -28,7 +28,6 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 
-  req.userId = result.userId;
   req.userEmail = result.email;
   next();
 }

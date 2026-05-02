@@ -89,14 +89,14 @@ router.post('/verify', (req, res) => {
       return res.status(401).json({ error: map[result.reason] || 'Invalid code', reason: result.reason });
     }
 
-    const user = storage.getOrCreateUserByEmail(email);
-    const sessionToken = generateSessionToken({ userId: user.id, email: user.email });
+    const lower = email.toLowerCase();
+    const sessionToken = generateSessionToken({ email: lower });
 
     // Refund the email rate-limit count on successful verify (mirrors YT server pattern).
     storage.decrementEmailRateLimit(email);
 
-    console.log(`[auth] User signed in: ${user.email}`);
-    res.json({ session_token: sessionToken, email: user.email });
+    console.log(`[auth] User signed in: ${lower}`);
+    res.json({ session_token: sessionToken, email: lower });
   } catch (err) {
     console.error('Error in verify:', err);
     res.status(500).json({ error: 'Failed to verify code' });
