@@ -4,14 +4,14 @@ Browser extension that sets daily caps and leaky-bucket rate limits on distracti
 
 ## Local testing
 
-`./dev.sh <firefox|chrome>` builds `dist/<browser>/` as a tree of symlinks back into `src/` with the right manifest copied in, so both browsers can run side-by-side without clobbering each other's `manifest.json`. Edits in `src/` propagate live through the symlinks.
+`./dev.sh <firefox|chrome>` lets both browsers run side-by-side without clobbering each other's `manifest.json`.
 
 ```bash
-./dev.sh firefox     # symlinks + launches web-ext run
-./dev.sh chrome      # symlinks; load dist/chrome/ as unpacked in chrome://extensions
+./dev.sh firefox     # writes src/manifest.json, launches web-ext run
+./dev.sh chrome      # builds dist/chrome/ — load as unpacked in chrome://extensions
 ```
 
-Re-run after editing a manifest variant; other source edits don't need a re-run.
+Firefox runs from `src/` directly (web-ext doesn't reliably load scripts through directory symlinks). Chrome runs from `dist/chrome/`, which is a tree of symlinks back into `src/` with `chrome_manifest.json` copied in. The two manifests live at different paths, so neither browser's setup affects the other. Edits in `src/` propagate live to both.
 
 ## Release
 
