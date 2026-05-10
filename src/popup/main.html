@@ -20,6 +20,23 @@
       <span class="site-time" id="site-time"></span>
     </div>
 
+    <div id="warn-banner" class="warn-banner hidden">
+      <div class="warn-count"><span id="warn-seconds">0</span><span class="warn-unit">s</span></div>
+      <div class="warn-text">
+        <div class="warn-title">Block imminent</div>
+        <div class="warn-sub" id="warn-sub"></div>
+      </div>
+      <button id="warn-extend" class="warn-extend hidden">+1 min</button>
+    </div>
+
+    <div id="track-banner" class="track-banner hidden">
+      <div class="track-text">
+        <div class="track-title" id="track-host"></div>
+        <div class="track-sub">Not tracked yet</div>
+      </div>
+      <button id="track-btn" type="button" class="track-btn">Track this site</button>
+    </div>
+
     <div id="policy-list" class="policy-list"></div>
 
     <div id="empty-state" class="empty-state hidden">

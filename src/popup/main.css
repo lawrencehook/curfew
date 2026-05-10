@@ -61,6 +61,129 @@ body {
   flex-shrink: 0;
 }
 
+/* ── Warn banner ────────────────────────────────────────── */
+.warn-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #fbe9eb;
+  border-bottom: 1px solid #f1ccd1;
+  animation: warn-pulse 1s ease-in-out infinite;
+}
+
+.warn-count {
+  font-size: 28px;
+  font-weight: 700;
+  color: #b5333f;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.warn-unit {
+  font-size: 16px;
+  font-weight: 600;
+  margin-left: 1px;
+  opacity: 0.75;
+}
+
+.warn-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.warn-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #8a1f29;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.warn-sub {
+  font-size: 11px;
+  color: #7d4a4f;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.warn-extend {
+  padding: 7px 11px;
+  background: #b5333f;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.warn-extend:hover {
+  background: #8a1f29;
+}
+
+.warn-extend:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes warn-pulse {
+  0%, 100% { background: #fbe9eb; }
+  50% { background: #f5d3d8; }
+}
+
+/* ── Track banner ───────────────────────────────────────── */
+.track-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.track-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.track-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-sub {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+
+.track-btn {
+  padding: 7px 11px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.track-btn:hover {
+  background: var(--primary-hover);
+}
+
 /* ── Policy list ────────────────────────────────────────── */
 .policy-list {
   padding: 8px;

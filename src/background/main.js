@@ -305,12 +305,19 @@ async function evalRule(policy, rule) {
       progress: limitSec > 0 ? sec / limitSec : 1,
       current: sec,
       limit: limitSec,
+      remainingSec: Math.max(0, limitSec - sec),
       domains: policy.domains.slice(),
     };
   }
   if (rule.type === 'bucket') {
     const state = refillBucket(rule);
     const cap = rule.capacityMin * 60;
+    const windowSec = rule.windowMin * 60;
+    // Drain is 1 tok/sec while on the tab; refill is cap/windowSec tok/sec.
+    // Net wall-seconds-until-empty = tokens / (1 - cap/windowSec).
+    // If refill ≥ drain (cap ≥ windowSec), the bucket never empties while active.
+    const netDrain = windowSec > 0 ? 1 - cap / windowSec : 1;
+    const remainingSec = netDrain > 0 ? state.tokens / netDrain : Infinity;
     return {
       policyId: policy.id,
       policyName: policy.name,
@@ -320,6 +327,7 @@ async function evalRule(policy, rule) {
       progress: cap > 0 ? 1 - state.tokens / cap : 1,
       current: cap - state.tokens,
       limit: cap,
+      remainingSec,
       domains: policy.domains.slice(),
     };
   }

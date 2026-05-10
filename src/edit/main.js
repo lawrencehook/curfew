@@ -2,6 +2,7 @@ const params = new URLSearchParams(location.search);
 const targetDomain = params.get('domain') || '';
 const targetPolicyId = params.get('policy') || '';
 const targetView = params.get('view') || '';
+const newPolicyDomain = params.get('newPolicyDomain') || '';
 
 const EXPORT_FORMAT = 'curb-export-v1';
 
@@ -17,6 +18,19 @@ let statusTimer = null;
 async function load() {
   const data = await browser.storage.local.get('policies');
   policies = data.policies || [];
+
+  if (newPolicyDomain) {
+    const d = newPolicyDomain.toLowerCase().replace(/^www\./, '');
+    if (d) {
+      const existing = policies.find((p) => p.domains.includes(d));
+      if (existing) {
+        location.href = 'main.html?policy=' + encodeURIComponent(existing.id);
+      } else {
+        await createPolicy([d]);
+      }
+      return;
+    }
+  }
 
   renderSidebar();
   resolveView();

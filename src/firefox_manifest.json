@@ -10,6 +10,11 @@
   "background": {
     "scripts": ["background/main.js"]
   },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content/main.js"],
+    "run_at": "document_idle"
+  }],
   "browser_action": {
     "default_popup": "popup/main.html",
     "default_icon": {

@@ -71,9 +71,67 @@ function ruleStat(e) {
  * Render
  ***************/
 
+const WARN_THRESHOLD_SEC = 15;
+
+function tightestActiveRule() {
+  if (!matchedDomain) return null;
+  let best = null;
+  for (const p of state.policies || []) {
+    if (!p.domains.includes(matchedDomain)) continue;
+    for (const r of p.rules) {
+      const e = state.ruleEvals && state.ruleEvals[r.id];
+      if (!e || e.blocked) continue;
+      const remaining = e.remainingSec;
+      if (!isFinite(remaining) || remaining <= 0) continue;
+      if (!best || remaining < best.remaining) {
+        best = { policy: p, rule: r, remaining };
+      }
+    }
+  }
+  return best;
+}
+
 function render() {
   renderHeader();
+  renderWarn();
+  renderTrack();
   renderPolicies();
+}
+
+function renderTrack() {
+  const banner = qs('#track-banner');
+  if (!currentHost || matchedDomain) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.classList.remove('hidden');
+  qs('#track-host').textContent = currentHost.replace(/^www\./, '');
+}
+
+function renderWarn() {
+  const banner = qs('#warn-banner');
+  const tight = tightestActiveRule();
+  if (!tight || tight.remaining > WARN_THRESHOLD_SEC) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  banner.classList.remove('hidden');
+  qs('#warn-seconds').textContent = Math.max(0, Math.ceil(tight.remaining));
+  qs('#warn-sub').textContent = tight.policy.name + ' · ' + matchedDomain;
+
+  const extendBtn = qs('#warn-extend');
+  if (tight.rule.type === 'daily') {
+    extendBtn.classList.remove('hidden');
+    if (extendBtn.dataset.ruleId !== tight.rule.id) {
+      extendBtn.dataset.ruleId = tight.rule.id;
+      extendBtn.disabled = false;
+      extendBtn.textContent = '+1 min';
+    }
+  } else {
+    extendBtn.classList.add('hidden');
+    delete extendBtn.dataset.ruleId;
+  }
 }
 
 function renderHeader() {
@@ -203,6 +261,30 @@ qs('#manage-btn').addEventListener('click', () => {
     url: browser.runtime.getURL('edit/main.html'),
   });
   window.close();
+});
+
+qs('#track-btn').addEventListener('click', () => {
+  if (!currentHost) return;
+  const domain = currentHost.replace(/^www\./, '');
+  browser.tabs.create({
+    url: browser.runtime.getURL(
+      'edit/main.html?newPolicyDomain=' + encodeURIComponent(domain)
+    ),
+  });
+  window.close();
+});
+
+qs('#warn-extend').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ruleId = btn.dataset.ruleId;
+  if (!ruleId || btn.disabled) return;
+  btn.disabled = true;
+  const resp = await browser.runtime.sendMessage({ type: 'extendTime', ruleId });
+  if (!resp || !resp.success) {
+    btn.textContent = 'used';
+  } else {
+    fetchStatus();
+  }
 });
 
 window.addEventListener('unload', () => {
