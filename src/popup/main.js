@@ -120,9 +120,12 @@ function renderPolicies() {
   }
 
   // Per-tick: update stats
+  const policyActive = state.policyActive || {};
   for (const p of policies) {
     const card = qs(`[data-policy-id="${p.id}"]`, list);
     if (!card) continue;
+    const inactive = policyActive[p.id] === false;
+    card.classList.toggle('off-schedule', inactive);
     let tightest = 0;
     for (const r of p.rules) {
       const e = state.ruleEvals && state.ruleEvals[r.id];
@@ -141,7 +144,9 @@ function renderPolicies() {
         text.textContent = '—';
       }
     }
-    const color = p.rules.length ? statusColor(tightest * 100) : 'var(--border-strong)';
+    const color = inactive
+      ? 'var(--border-strong)'
+      : p.rules.length ? statusColor(tightest * 100) : 'var(--border-strong)';
     card.style.borderLeftColor = color;
   }
 }

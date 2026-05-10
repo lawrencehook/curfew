@@ -313,6 +313,7 @@ function renderPolicyView(p) {
 
   renderRules(p);
   renderPolicyDomains(p);
+  renderSchedule(p);
   refreshAddRuleOptions(p);
   updateStatus();
 }
@@ -560,6 +561,174 @@ function renderPolicyDomains(p) {
 }
 
 /***************
+ * Schedule
+ ***************/
+
+const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const SCHEDULE_PRESETS = {
+  always: { windows: [] },
+  workdays: { windows: [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }] },
+  weekends: { windows: [{ days: [0, 6], startMin: 0, endMin: 24 * 60 }] },
+};
+
+function emptySchedule() {
+  return { windows: [] };
+}
+
+function schedulesEqual(a, b) {
+  return JSON.stringify(a || emptySchedule()) === JSON.stringify(b || emptySchedule());
+}
+
+function detectPreset(schedule) {
+  if (!schedule || !schedule.windows || !schedule.windows.length) return 'always';
+  for (const [name, preset] of Object.entries(SCHEDULE_PRESETS)) {
+    if (schedulesEqual(schedule, preset)) return name;
+  }
+  return 'custom';
+}
+
+function minToHHMM(min) {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function hhmmToMin(s) {
+  const [h, m] = (s || '').split(':').map((x) => parseInt(x, 10));
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function isPolicyActive(policy, now = new Date()) {
+  const sched = policy.schedule;
+  if (!sched || !Array.isArray(sched.windows) || !sched.windows.length) return true;
+  const day = now.getDay();
+  const min = now.getHours() * 60 + now.getMinutes();
+  for (const w of sched.windows) {
+    if (!w || !Array.isArray(w.days) || !w.days.includes(day)) continue;
+    if (typeof w.startMin !== 'number' || typeof w.endMin !== 'number') continue;
+    if (w.endMin <= w.startMin) continue;
+    if (min >= w.startMin && min < w.endMin) return true;
+  }
+  return false;
+}
+
+function describeSchedule(schedule) {
+  const preset = detectPreset(schedule);
+  if (preset === 'always') return 'always on';
+  if (preset === 'workdays') return '9–5 workdays';
+  if (preset === 'weekends') return 'weekends only';
+  const n = (schedule && schedule.windows && schedule.windows.length) || 0;
+  return n + ' window' + (n === 1 ? '' : 's');
+}
+
+function renderSchedule(p) {
+  const presetEls = qsa('#schedule-presets input[name="schedule-preset"]');
+  const custom = qs('#schedule-custom');
+  const badge = qs('#schedule-status-badge');
+  const current = detectPreset(p.schedule);
+
+  for (const el of presetEls) {
+    el.checked = el.value === current;
+    el.onchange = async () => {
+      if (!el.checked) return;
+      if (el.value === 'custom') {
+        if (!p.schedule || !p.schedule.windows || !p.schedule.windows.length) {
+          p.schedule = { windows: [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }] };
+        }
+      } else {
+        p.schedule = JSON.parse(JSON.stringify(SCHEDULE_PRESETS[el.value]));
+      }
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    };
+  }
+
+  custom.classList.toggle('hidden', current !== 'custom');
+  if (current === 'custom') renderScheduleWindows(p);
+
+  badge.textContent = describeSchedule(p.schedule) + (isPolicyActive(p) ? '' : ' · off now');
+}
+
+function renderScheduleWindows(p) {
+  const host = qs('#schedule-windows');
+  host.innerHTML = '';
+  const windows = (p.schedule && p.schedule.windows) || [];
+
+  for (let i = 0; i < windows.length; i++) {
+    const w = windows[i];
+    const row = document.createElement('div');
+    row.className = 'schedule-window';
+
+    const days = document.createElement('div');
+    days.className = 'schedule-days';
+    for (let d = 0; d < 7; d++) {
+      const id = `sched-day-${i}-${d}`;
+      const checked = w.days.includes(d);
+      days.insertAdjacentHTML(
+        'beforeend',
+        `<label class="schedule-day${checked ? ' on' : ''}" title="${esc(DAY_NAMES[d])}">
+          <input type="checkbox" id="${id}" data-day="${d}" ${checked ? 'checked' : ''}>
+          <span>${DAY_LABELS[d]}</span>
+        </label>`
+      );
+    }
+    row.appendChild(days);
+
+    const times = document.createElement('div');
+    times.className = 'schedule-times';
+    times.innerHTML = `
+      <input type="time" class="sched-start" value="${minToHHMM(w.startMin)}">
+      <span>to</span>
+      <input type="time" class="sched-end" value="${minToHHMM(w.endMin)}">
+      <button type="button" class="btn btn-ghost sched-remove">Remove</button>
+    `;
+    row.appendChild(times);
+
+    host.appendChild(row);
+
+    const update = async () => {
+      const newDays = qsa('input[type="checkbox"]', days)
+        .filter((cb) => cb.checked)
+        .map((cb) => parseInt(cb.dataset.day, 10));
+      const startMin = hhmmToMin(qs('.sched-start', row).value);
+      const endMin = hhmmToMin(qs('.sched-end', row).value);
+      if (startMin === null || endMin === null) return;
+      if (endMin <= startMin) return;
+      windows[i] = { days: newDays, startMin, endMin };
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    };
+
+    qsa('input[type="checkbox"]', days).forEach((cb) => cb.addEventListener('change', update));
+    qs('.sched-start', row).addEventListener('change', update);
+    qs('.sched-end', row).addEventListener('change', update);
+    qs('.sched-remove', row).addEventListener('click', async () => {
+      windows.splice(i, 1);
+      if (!windows.length) {
+        p.schedule = emptySchedule();
+      }
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    });
+  }
+
+  qs('#schedule-add-window').onclick = async () => {
+    const ws = (p.schedule && p.schedule.windows) || [];
+    ws.push({ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 });
+    p.schedule = { windows: ws };
+    touchPolicy(p);
+    await savePolicies();
+    renderSchedule(p);
+  };
+}
+
+/***************
  * Status updates
  ***************/
 
@@ -579,6 +748,7 @@ function applyStatus(fillEl, textEl, e) {
     const remaining = Math.max(0, e.limit - e.current);
     textEl.textContent = `${fmtDuration(remaining)} available`;
   }
+  if (e.active === false) textEl.textContent += ' · off-schedule';
 }
 
 function updateStatus() {
@@ -598,6 +768,14 @@ function updateStatus() {
     if (!t) continue;
     const sec = todayUsage[row.dataset.domain] || 0;
     t.textContent = `${fmtDuration(sec)} today`;
+  }
+  // Policy view: refresh schedule badge so "off now" stays current
+  const badge = qs('#schedule-status-badge');
+  if (badge && targetPolicyId) {
+    const p = livePolicies().find((x) => x.id === targetPolicyId);
+    if (p) {
+      badge.textContent = describeSchedule(p.schedule) + (isPolicyActive(p) ? '' : ' · off now');
+    }
   }
 }
 
@@ -937,6 +1115,19 @@ function validateImport(parsed) {
       if (r.type === 'daily' && typeof r.minutes !== 'number') return 'Daily rule missing minutes.';
       if (r.type === 'bucket' && (typeof r.capacityMin !== 'number' || typeof r.windowMin !== 'number')) {
         return 'Bucket rule missing capacityMin or windowMin.';
+      }
+    }
+    if (p.schedule !== undefined) {
+      if (!p.schedule || typeof p.schedule !== 'object' || !Array.isArray(p.schedule.windows)) {
+        return 'Policy schedule must be { windows: [...] }.';
+      }
+      for (const w of p.schedule.windows) {
+        if (!w || !Array.isArray(w.days) || !w.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) {
+          return 'Schedule window days must be integers 0–6.';
+        }
+        if (typeof w.startMin !== 'number' || typeof w.endMin !== 'number') {
+          return 'Schedule window missing startMin/endMin.';
+        }
       }
     }
   }

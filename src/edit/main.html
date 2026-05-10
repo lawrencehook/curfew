@@ -104,6 +104,26 @@
               <div id="policy-domains" class="domain-list"></div>
             </section>
 
+            <section class="card">
+              <div class="section-head">
+                <h2>Schedule</h2>
+                <span class="badge" id="schedule-status-badge">always on</span>
+              </div>
+              <p class="hint">
+                When this policy enforces its rules. Off-schedule, rules don't block and rate buckets pause.
+              </p>
+              <div class="schedule-presets" id="schedule-presets">
+                <label><input type="radio" name="schedule-preset" value="always"> Always on</label>
+                <label><input type="radio" name="schedule-preset" value="workdays"> 9–5 workdays</label>
+                <label><input type="radio" name="schedule-preset" value="weekends"> Weekends only</label>
+                <label><input type="radio" name="schedule-preset" value="custom"> Custom</label>
+              </div>
+              <div id="schedule-custom" class="schedule-custom hidden">
+                <div id="schedule-windows"></div>
+                <button type="button" id="schedule-add-window" class="btn btn-ghost">Add window</button>
+              </div>
+            </section>
+
             <section class="card coming-soon">
               <div class="section-head">
                 <h2>Access gates</h2>

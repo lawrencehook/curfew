@@ -87,6 +87,10 @@ body {
   box-shadow: 0 0 0 1px var(--primary-subtle), 0 1px 3px var(--shadow);
 }
 
+.policy-card.off-schedule {
+  opacity: 0.6;
+}
+
 .policy-head {
   display: flex;
   justify-content: space-between;
