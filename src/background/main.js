@@ -22,8 +22,12 @@ const MAX_EXTENSIONS = 1;
  * policies: [{id, name, domains: [string], rules: [Rule]}]
  *   Rule: {id, type: 'daily',  minutes}
  *       | {id, type: 'bucket', capacityMin, windowMin}
- * usage:    {[date]: {[domain]: seconds}}
- * buckets:  {[ruleId]: {tokens, lastRefillMs, cap}}
+ * usage:           {[domain]: {[minute]: seconds}}        — today only, this device
+ * allUsage (disk): {[date]: {[domain]: {[minute]: seconds}}} — full local history
+ * usageRemoteToday:{[deviceId]: {[domain]: {[minute]: seconds}}}
+ *                  — siblings' today-slice, refreshed on each sync, used for
+ *                    cross-device daily-cap evaluation
+ * buckets:         {[ruleId]: {tokens, lastRefillMs, cap}}
  * ext_<date>_<ruleId>: number
  *
  * Tracked domains are the union of all policy.domains — sites are not stored.
@@ -31,6 +35,7 @@ const MAX_EXTENSIONS = 1;
 
 let policies = [];
 let usage = {};
+let usageRemoteToday = {};
 let buckets = {};
 let dateKey = getDateKey();
 let activeTabId = null;
@@ -52,6 +57,31 @@ function getDateKey() {
   ].join('-');
 }
 
+function getMinuteOfDay() {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+// Sums seconds across a domain's entry. Handles both the minute-bucket shape
+// ({[minute]: seconds}) and the legacy flat-number shape (pre-minute-bucket
+// data carried forward from older installs).
+function sumDomainEntry(entry) {
+  if (!entry) return 0;
+  if (typeof entry === 'number') return entry;
+  let total = 0;
+  for (const v of Object.values(entry)) total += v || 0;
+  return total;
+}
+
+// Today's seconds for a domain across this device + every device's today-slice.
+function todayDomainSeconds(domain) {
+  let total = sumDomainEntry(usage[domain]);
+  for (const today of Object.values(usageRemoteToday)) {
+    total += sumDomainEntry(today[domain]);
+  }
+  return total;
+}
+
 function newId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -65,9 +95,13 @@ function hostname(url) {
   }
 }
 
+function livePolicies() {
+  return policies.filter((p) => !p.deleted);
+}
+
 function trackedDomainsSet() {
   const set = new Set();
-  for (const p of policies) for (const d of p.domains) set.add(d);
+  for (const p of livePolicies()) for (const d of p.domains) set.add(d);
   return set;
 }
 
@@ -82,11 +116,11 @@ function matchTrackedDomain(host) {
 }
 
 function policiesForDomain(domain) {
-  return policies.filter((p) => p.domains.includes(domain));
+  return livePolicies().filter((p) => p.domains.includes(domain));
 }
 
 function findRule(ruleId) {
-  for (const p of policies) {
+  for (const p of livePolicies()) {
     for (const r of p.rules) if (r.id === ruleId) return { policy: p, rule: r };
   }
   return null;
@@ -185,12 +219,22 @@ function migrate(rawSites, rawLimits, rawPolicies) {
  * Storage
  ***************/
 
+async function ensureDeviceId() {
+  const data = await browser.storage.local.get('device_id');
+  if (typeof data.device_id === 'string' && data.device_id) return data.device_id;
+  const id = newId();
+  await browser.storage.local.set({ device_id: id });
+  return id;
+}
+
 async function load() {
+  await ensureDeviceId();
   const data = await browser.storage.local.get([
     'sites',
     'limits',
     'policies',
     'usage',
+    'usage_remote_today',
     'buckets',
   ]);
   const m = migrate(data.sites, data.limits, data.policies);
@@ -198,6 +242,10 @@ async function load() {
 
   const allUsage = data.usage || {};
   usage = allUsage[dateKey] || {};
+
+  // usage_remote_today is keyed by date as well so a stale day rolls off cleanly.
+  const remoteByDate = data.usage_remote_today || {};
+  usageRemoteToday = remoteByDate[dateKey] || {};
   buckets = data.buckets || {};
 
   if (m.changed) {
@@ -222,7 +270,7 @@ async function pruneExtKeys() {
 
 function pruneBuckets() {
   const valid = new Set();
-  for (const p of policies) {
+  for (const p of livePolicies()) {
     for (const r of p.rules) {
       if (r.type === 'bucket') valid.add(r.id);
     }
@@ -293,7 +341,7 @@ function drainBucket(rule) {
 async function evalRule(policy, rule) {
   if (rule.type === 'daily') {
     let sec = 0;
-    for (const d of policy.domains) sec += usage[d] || 0;
+    for (const d of policy.domains) sec += todayDomainSeconds(d);
     const ext = await getExtensionCount(rule.id);
     const limitSec = rule.minutes * 60 + ext * EXTENSION_BONUS;
     return {
@@ -355,6 +403,7 @@ function checkDayRollover() {
   if (now !== dateKey) {
     dateKey = now;
     usage = {};
+    usageRemoteToday = {};
     return true;
   }
   return false;
@@ -365,7 +414,16 @@ async function tick() {
 
   checkDayRollover();
 
-  usage[trackedDomain] = (usage[trackedDomain] || 0) + 1;
+  const minute = String(getMinuteOfDay());
+  let bucket = usage[trackedDomain];
+  // First write since upgrade can find a legacy flat-number entry sitting in
+  // today's slot — preserve those seconds in a sentinel bucket alongside the
+  // new minute counts.
+  if (!bucket || typeof bucket !== 'object') {
+    bucket = typeof bucket === 'number' ? { legacy: bucket } : {};
+    usage[trackedDomain] = bucket;
+  }
+  bucket[minute] = (bucket[minute] || 0) + 1;
   dirty = true;
 
   const applicable = policiesForDomain(trackedDomain);
@@ -376,7 +434,7 @@ async function tick() {
   }
 
   const results = await evalDomainRules(trackedDomain);
-  const sec = usage[trackedDomain];
+  const sec = todayDomainSeconds(trackedDomain);
   browser.browserAction.setBadgeText({ text: badgeText(sec) });
   browser.browserAction.setBadgeBackgroundColor({
     color: badgeColor(tightestProgress(results)),
@@ -391,7 +449,7 @@ async function startTracking(domain) {
   stopTracking();
   trackedDomain = domain;
 
-  const sec = usage[domain] || 0;
+  const sec = todayDomainSeconds(domain);
   const results = await evalDomainRules(domain);
   browser.browserAction.setBadgeText({ text: badgeText(sec) });
   browser.browserAction.setBadgeBackgroundColor({
@@ -493,6 +551,11 @@ browser.storage.onChanged.addListener((changes) => {
     pruneBuckets();
     if (activeTabId) evaluate(activeTabId);
   }
+  if (changes.usage_remote_today) {
+    const byDate = changes.usage_remote_today.newValue || {};
+    usageRemoteToday = byDate[dateKey] || {};
+    if (activeTabId) evaluate(activeTabId);
+  }
 });
 
 setInterval(flush, FLUSH_INTERVAL);
@@ -533,17 +596,20 @@ async function evalStatusAll() {
   checkDayRollover();
   const domains = Array.from(trackedDomainsSet());
   const evals = {};
+  const todayUsage = {};
   for (const d of domains) {
     evals[d] = await evalDomainRules(d);
+    todayUsage[d] = todayDomainSeconds(d);
   }
+  const live = livePolicies();
   const ruleEvals = {};
-  for (const p of policies) {
+  for (const p of live) {
     for (const r of p.rules) {
       const e = await evalRule(p, r);
       if (e) ruleEvals[r.id] = e;
     }
   }
-  return { domains, policies, usage, dateKey, evals, ruleEvals };
+  return { domains, policies: live, usage: todayUsage, dateKey, evals, ruleEvals };
 }
 
 /***************
