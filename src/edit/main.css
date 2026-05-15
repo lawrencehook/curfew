@@ -1018,3 +1018,54 @@ body {
     padding: 18px;
   }
 }
+
+/* ── Devices list ─────────────────────────────────── */
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.device-row:hover {
+  background: var(--bg);
+}
+
+.device-row .device-name-input {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.device-row .device-name-input:hover,
+.device-row .device-name-input:focus {
+  border-color: var(--border);
+  background: var(--surface);
+  outline: none;
+}
+
+.device-row .device-tag {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.device-row .device-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.device-row .btn-remove-device {
+  font-size: 12px;
+  padding: 4px 8px;
+}
