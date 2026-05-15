@@ -120,9 +120,17 @@ function renderPolicies() {
   }
 
   // Per-tick: update stats
+  const policyActive = state.policyActive || {};
   for (const p of policies) {
     const card = qs(`[data-policy-id="${p.id}"]`, list);
     if (!card) continue;
+    const inactive = policyActive[p.id] === false;
+    card.classList.toggle('off-schedule', inactive);
+    const statusEl = qs('.policy-status', card);
+    if (statusEl) {
+      statusEl.dataset.state = inactive ? 'off' : 'active';
+      statusEl.textContent = inactive ? 'off' : 'active';
+    }
     let tightest = 0;
     for (const r of p.rules) {
       const e = state.ruleEvals && state.ruleEvals[r.id];
@@ -141,7 +149,9 @@ function renderPolicies() {
         text.textContent = '—';
       }
     }
-    const color = p.rules.length ? statusColor(tightest * 100) : 'var(--border-strong)';
+    const color = inactive
+      ? 'var(--border-strong)'
+      : p.rules.length ? statusColor(tightest * 100) : 'var(--border-strong)';
     card.style.borderLeftColor = color;
   }
 }
@@ -165,10 +175,17 @@ function buildCards(list, policies) {
           </div>`;
       }
     }
+    const hasSchedule = !!(p.schedule && p.schedule.windows && p.schedule.windows.length);
+    const statusHtml = hasSchedule
+      ? `<span class="policy-status" data-state="active">active</span>`
+      : '';
     html += `
       <div class="policy-card${isActive ? ' active' : ''}" data-policy-id="${esc(p.id)}">
         <div class="policy-head">
-          <span class="policy-name">${esc(p.name)}</span>
+          <div class="policy-head-left">
+            <span class="policy-name">${esc(p.name)}</span>
+            ${statusHtml}
+          </div>
           <span class="policy-meta">${p.domains.length} site${p.domains.length === 1 ? '' : 's'}</span>
         </div>
         ${rulesHtml}

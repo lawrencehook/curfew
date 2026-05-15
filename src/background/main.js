@@ -99,6 +99,22 @@ function livePolicies() {
   return policies.filter((p) => !p.deleted);
 }
 
+// Absent/empty schedule = always active. Each window applies only on its
+// listed days (0=Sun..6=Sat), within [startMin, endMin) — same-day windows only.
+function isPolicyActive(policy, now = new Date()) {
+  const sched = policy.schedule;
+  if (!sched || !Array.isArray(sched.windows) || !sched.windows.length) return true;
+  const day = now.getDay();
+  const min = now.getHours() * 60 + now.getMinutes();
+  for (const w of sched.windows) {
+    if (!w || !Array.isArray(w.days) || !w.days.includes(day)) continue;
+    if (typeof w.startMin !== 'number' || typeof w.endMin !== 'number') continue;
+    if (w.endMin <= w.startMin) continue;
+    if (min >= w.startMin && min < w.endMin) return true;
+  }
+  return false;
+}
+
 function trackedDomainsSet() {
   const set = new Set();
   for (const p of livePolicies()) for (const d of p.domains) set.add(d);
@@ -339,6 +355,7 @@ function drainBucket(rule) {
  ***************/
 
 async function evalRule(policy, rule) {
+  const active = isPolicyActive(policy);
   if (rule.type === 'daily') {
     let sec = 0;
     for (const d of policy.domains) sec += todayDomainSeconds(d);
@@ -349,11 +366,12 @@ async function evalRule(policy, rule) {
       policyName: policy.name,
       ruleId: rule.id,
       type: 'daily',
-      blocked: limitSec > 0 && sec >= limitSec,
+      blocked: active && limitSec > 0 && sec >= limitSec,
       progress: limitSec > 0 ? sec / limitSec : 1,
       current: sec,
       limit: limitSec,
       domains: policy.domains.slice(),
+      active,
     };
   }
   if (rule.type === 'bucket') {
@@ -364,11 +382,12 @@ async function evalRule(policy, rule) {
       policyName: policy.name,
       ruleId: rule.id,
       type: 'bucket',
-      blocked: cap > 0 && state.tokens <= 0,
+      blocked: active && cap > 0 && state.tokens <= 0,
       progress: cap > 0 ? 1 - state.tokens / cap : 1,
       current: cap - state.tokens,
       limit: cap,
       domains: policy.domains.slice(),
+      active,
     };
   }
   return null;
@@ -428,6 +447,7 @@ async function tick() {
 
   const applicable = policiesForDomain(trackedDomain);
   for (const p of applicable) {
+    if (!isPolicyActive(p)) continue;
     for (const r of p.rules) {
       if (r.type === 'bucket') drainBucket(r);
     }
@@ -603,13 +623,15 @@ async function evalStatusAll() {
   }
   const live = livePolicies();
   const ruleEvals = {};
+  const policyActive = {};
   for (const p of live) {
+    policyActive[p.id] = isPolicyActive(p);
     for (const r of p.rules) {
       const e = await evalRule(p, r);
       if (e) ruleEvals[r.id] = e;
     }
   }
-  return { domains, policies: live, usage: todayUsage, dateKey, evals, ruleEvals };
+  return { domains, policies: live, usage: todayUsage, dateKey, evals, ruleEvals, policyActive };
 }
 
 /***************
