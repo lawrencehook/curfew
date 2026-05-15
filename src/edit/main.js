@@ -7,17 +7,22 @@ const newPolicyDomain = params.get('newPolicyDomain') || '';
 const EXPORT_FORMAT = 'curb-export-v1';
 
 let policies = [];
+let devices = [];
 let ruleEvals = {};
 let todayUsage = {};
 let statusTimer = null;
+
+// Cached full remote history while the history view is open. Populated lazily.
+let historyRemoteCache = null;
 
 /***************
  * Load / Save
  ***************/
 
 async function load() {
-  const data = await browser.storage.local.get('policies');
+  const data = await browser.storage.local.get(['policies', 'devices']);
   policies = data.policies || [];
+  devices = data.devices || [];
 
   if (newPolicyDomain) {
     const d = newPolicyDomain.toLowerCase().replace(/^www\./, '');
@@ -34,10 +39,42 @@ async function load() {
 
   renderSidebar();
   resolveView();
-  if (targetView === 'settings') renderSync();
+  if (targetView === 'settings') {
+    renderSync();
+    renderDevices();
+  }
   pollStatus();
   if (statusTimer) clearInterval(statusTimer);
   statusTimer = setInterval(pollStatus, 1000);
+
+  autoSync();
+}
+
+async function saveDevices() {
+  await browser.storage.local.set({ devices });
+}
+
+// Best-effort sync on page open. Silent on failure — manual sync surfaces errors.
+async function autoSync() {
+  if (!(await getSession())) return;
+  const onSettings = targetView === 'settings';
+  try {
+    const result = await syncNow();
+    if (result.policies.status === 'pulled' || result.policies.status === 'merged') {
+      const data = await browser.storage.local.get('policies');
+      policies = data.policies || [];
+      renderSidebar();
+      // The current view may now point at a tombstoned policy or stale state;
+      // re-resolve so the user lands somewhere coherent.
+      resolveView();
+    }
+    if (result.devices.status === 'pulled' || result.devices.status === 'merged') {
+      const data = await browser.storage.local.get('devices');
+      devices = data.devices || [];
+      if (onSettings) renderDevices();
+    }
+    if (onSettings) renderSync();
+  } catch {}
 }
 
 async function savePolicies() {
@@ -63,14 +100,22 @@ function newId() {
   return 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
+function touchPolicy(p) {
+  p.updated_at = Date.now();
+}
+
+function livePolicies() {
+  return policies.filter((p) => !p.deleted);
+}
+
 function trackedDomains() {
   const set = new Set();
-  for (const p of policies) for (const d of p.domains) set.add(d);
+  for (const p of livePolicies()) for (const d of p.domains) set.add(d);
   return Array.from(set).sort();
 }
 
 function nextPolicyName() {
-  const used = new Set(policies.map((p) => p.name));
+  const used = new Set(livePolicies().map((p) => p.name));
   let n = 1;
   while (used.has(`Policy ${n}`)) n++;
   return `Policy ${n}`;
@@ -128,7 +173,7 @@ function resolveView() {
   }
 
   if (targetPolicyId) {
-    const p = policies.find((x) => x.id === targetPolicyId);
+    const p = livePolicies().find((x) => x.id === targetPolicyId);
     if (p) {
       qs('#policy-view').classList.remove('hidden');
       renderPolicyView(p);
@@ -136,8 +181,9 @@ function resolveView() {
     }
   }
 
-  if (policies.length) {
-    location.href = 'main.html?policy=' + encodeURIComponent(policies[0].id);
+  const live = livePolicies();
+  if (live.length) {
+    location.href = 'main.html?policy=' + encodeURIComponent(live[0].id);
     return;
   }
 
@@ -172,13 +218,14 @@ function renderSidebar() {
   // Policies
   const pList = qs('#sidebar-policies');
   pList.innerHTML = '';
-  if (!policies.length) {
+  const live = livePolicies();
+  if (!live.length) {
     const el = document.createElement('div');
     el.className = 'sidebar-empty';
     el.textContent = 'No policies yet.';
     pList.appendChild(el);
   } else {
-    const sorted = policies.slice().sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = live.slice().sort((a, b) => a.name.localeCompare(b.name));
     for (const p of sorted) {
       const el = document.createElement('a');
       el.className = 'sidebar-item sidebar-limit';
@@ -218,7 +265,7 @@ function renderSiteView() {
   const list = qs('#site-policies-list');
   list.innerHTML = '';
 
-  const applicable = policies.filter((p) => p.domains.includes(targetDomain));
+  const applicable = livePolicies().filter((p) => p.domains.includes(targetDomain));
 
   if (!applicable.length) {
     const empty = document.createElement('div');
@@ -273,12 +320,14 @@ function renderPolicyView(p) {
       return;
     }
     p.name = v;
+    touchPolicy(p);
     await savePolicies();
     renderSidebar();
   });
 
   renderRules(p);
   renderPolicyDomains(p);
+  renderSchedule(p);
   refreshAddRuleOptions(p);
   updateStatus();
 }
@@ -291,7 +340,7 @@ function refreshAddRuleOptions(p) {
   const conflict =
     !policyHasDaily &&
     p.domains.some((d) =>
-      policies.some(
+      livePolicies().some(
         (other) =>
           other.id !== p.id && other.rules.some((r) => r.type === 'daily') && other.domains.includes(d)
       )
@@ -377,6 +426,7 @@ function attachRuleHandlers(el, p, r) {
       const v = parseInt(f.value, 10);
       if (isNaN(v) || v < 0) return;
       r.minutes = v;
+      touchPolicy(p);
       await savePolicies();
     });
   }
@@ -389,6 +439,7 @@ function attachRuleHandlers(el, p, r) {
       if (isNaN(cv) || cv < 0 || isNaN(wv) || wv < 1) return;
       r.capacityMin = cv;
       r.windowMin = wv;
+      touchPolicy(p);
       await savePolicies();
       renderRules(p);
     };
@@ -402,6 +453,7 @@ function attachRuleHandlers(el, p, r) {
 
 async function removeRule(p, r) {
   p.rules = p.rules.filter((x) => x.id !== r.id);
+  touchPolicy(p);
   await savePolicies();
   renderRules(p);
   refreshAddRuleOptions(p);
@@ -417,6 +469,7 @@ async function addRule(p, type) {
     rule = { id: newId(), type: 'bucket', capacityMin: 5, windowMin: 30 };
   } else return;
   p.rules.push(rule);
+  touchPolicy(p);
   await savePolicies();
   renderRules(p);
   refreshAddRuleOptions(p);
@@ -431,7 +484,7 @@ function dailyConflictsFor(p, domain) {
   // Returns the conflicting policy if `domain` is covered by another policy's daily rule.
   const policyHasDaily = p.rules.some((r) => r.type === 'daily');
   if (!policyHasDaily) return null;
-  return policies.find(
+  return livePolicies().find(
     (other) =>
       other.id !== p.id &&
       other.rules.some((r) => r.type === 'daily') &&
@@ -473,6 +526,7 @@ function renderPolicyDomains(p) {
       } else {
         p.domains = p.domains.filter((x) => x !== d);
       }
+      touchPolicy(p);
       await savePolicies();
       renderPolicyDomains(p);
       refreshAddRuleOptions(p);
@@ -508,6 +562,7 @@ function renderPolicyDomains(p) {
       return;
     }
     p.domains.push(raw);
+    touchPolicy(p);
     await savePolicies();
     renderPolicyDomains(p);
     refreshAddRuleOptions(p);
@@ -517,6 +572,185 @@ function renderPolicyDomains(p) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();
   });
+}
+
+/***************
+ * Schedule
+ ***************/
+
+const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+const SCHEDULE_PRESETS = {
+  always: { windows: [] },
+  workdays: { windows: [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }] },
+  weekends: { windows: [{ days: [0, 6], startMin: 0, endMin: 24 * 60 }] },
+};
+
+function emptySchedule() {
+  return { windows: [] };
+}
+
+function schedulesEqual(a, b) {
+  return JSON.stringify(a || emptySchedule()) === JSON.stringify(b || emptySchedule());
+}
+
+function detectPreset(schedule) {
+  if (!schedule || !schedule.windows || !schedule.windows.length) return 'always';
+  // Honor an explicit user choice of Custom — otherwise schedules that happen
+  // to match a preset's exact values (e.g. the Custom default is Mon-Fri 9-5,
+  // identical to workdays) would be detected back as that preset, closing the
+  // custom editor as soon as it opened.
+  if (schedule.custom) return 'custom';
+  for (const [name, preset] of Object.entries(SCHEDULE_PRESETS)) {
+    if (schedulesEqual(schedule, preset)) return name;
+  }
+  return 'custom';
+}
+
+function minToHHMM(min) {
+  // <input type="time"> can't represent 24:00, only 23:59. The weekends preset
+  // (and any "end of day" window) stores endMin=1440 semantically; clamp the
+  // display so the input doesn't reject the value. The stored value is left
+  // untouched unless the user actually edits the field.
+  if (min >= 24 * 60) return '23:59';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+function hhmmToMin(s) {
+  const [h, m] = (s || '').split(':').map((x) => parseInt(x, 10));
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function isPolicyActive(policy, now = new Date()) {
+  const sched = policy.schedule;
+  if (!sched || !Array.isArray(sched.windows) || !sched.windows.length) return true;
+  const day = now.getDay();
+  const min = now.getHours() * 60 + now.getMinutes();
+  for (const w of sched.windows) {
+    if (!w || !Array.isArray(w.days) || !w.days.includes(day)) continue;
+    if (typeof w.startMin !== 'number' || typeof w.endMin !== 'number') continue;
+    if (w.endMin <= w.startMin) continue;
+    if (min >= w.startMin && min < w.endMin) return true;
+  }
+  return false;
+}
+
+function describeSchedule(schedule) {
+  const preset = detectPreset(schedule);
+  if (preset === 'always') return 'always on';
+  if (preset === 'workdays') return '9–5 workdays';
+  if (preset === 'weekends') return 'weekends only';
+  const n = (schedule && schedule.windows && schedule.windows.length) || 0;
+  return n + ' window' + (n === 1 ? '' : 's');
+}
+
+function renderSchedule(p) {
+  const presetEls = qsa('#schedule-presets input[name="schedule-preset"]');
+  const custom = qs('#schedule-custom');
+  const badge = qs('#schedule-status-badge');
+  const current = detectPreset(p.schedule);
+
+  for (const el of presetEls) {
+    el.checked = el.value === current;
+    el.onchange = async () => {
+      if (!el.checked) return;
+      if (el.value === 'custom') {
+        const windows = (p.schedule && p.schedule.windows && p.schedule.windows.length)
+          ? p.schedule.windows
+          : [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }];
+        p.schedule = { custom: true, windows };
+      } else {
+        p.schedule = JSON.parse(JSON.stringify(SCHEDULE_PRESETS[el.value]));
+      }
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    };
+  }
+
+  custom.classList.toggle('hidden', current !== 'custom');
+  if (current === 'custom') renderScheduleWindows(p);
+
+  badge.textContent = describeSchedule(p.schedule) + (isPolicyActive(p) ? '' : ' · off now');
+}
+
+function renderScheduleWindows(p) {
+  const host = qs('#schedule-windows');
+  host.innerHTML = '';
+  const windows = (p.schedule && p.schedule.windows) || [];
+
+  for (let i = 0; i < windows.length; i++) {
+    const w = windows[i];
+    const row = document.createElement('div');
+    row.className = 'schedule-window';
+
+    const days = document.createElement('div');
+    days.className = 'schedule-days';
+    for (let d = 0; d < 7; d++) {
+      const id = `sched-day-${i}-${d}`;
+      const checked = w.days.includes(d);
+      days.insertAdjacentHTML(
+        'beforeend',
+        `<label class="schedule-day${checked ? ' on' : ''}" title="${esc(DAY_NAMES[d])}">
+          <input type="checkbox" id="${id}" data-day="${d}" ${checked ? 'checked' : ''}>
+          <span>${DAY_LABELS[d]}</span>
+        </label>`
+      );
+    }
+    row.appendChild(days);
+
+    const times = document.createElement('div');
+    times.className = 'schedule-times';
+    times.innerHTML = `
+      <input type="time" class="sched-start" value="${minToHHMM(w.startMin)}">
+      <span>to</span>
+      <input type="time" class="sched-end" value="${minToHHMM(w.endMin)}">
+      <button type="button" class="btn btn-ghost sched-remove">Remove</button>
+    `;
+    row.appendChild(times);
+
+    host.appendChild(row);
+
+    const update = async () => {
+      const newDays = qsa('input[type="checkbox"]', days)
+        .filter((cb) => cb.checked)
+        .map((cb) => parseInt(cb.dataset.day, 10));
+      const startMin = hhmmToMin(qs('.sched-start', row).value);
+      const endMin = hhmmToMin(qs('.sched-end', row).value);
+      if (startMin === null || endMin === null) return;
+      if (endMin <= startMin) return;
+      windows[i] = { days: newDays, startMin, endMin };
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    };
+
+    qsa('input[type="checkbox"]', days).forEach((cb) => cb.addEventListener('change', update));
+    qs('.sched-start', row).addEventListener('change', update);
+    qs('.sched-end', row).addEventListener('change', update);
+    qs('.sched-remove', row).addEventListener('click', async () => {
+      windows.splice(i, 1);
+      if (!windows.length) {
+        p.schedule = emptySchedule();
+      }
+      touchPolicy(p);
+      await savePolicies();
+      renderSchedule(p);
+    });
+  }
+
+  qs('#schedule-add-window').onclick = async () => {
+    const ws = (p.schedule && p.schedule.windows) || [];
+    ws.push({ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 });
+    p.schedule = { custom: true, windows: ws };
+    touchPolicy(p);
+    await savePolicies();
+    renderSchedule(p);
+  };
 }
 
 /***************
@@ -539,6 +773,7 @@ function applyStatus(fillEl, textEl, e) {
     const remaining = Math.max(0, e.limit - e.current);
     textEl.textContent = `${fmtDuration(remaining)} available`;
   }
+  if (e.active === false) textEl.textContent += ' · off-schedule';
 }
 
 function updateStatus() {
@@ -558,6 +793,14 @@ function updateStatus() {
     if (!t) continue;
     const sec = todayUsage[row.dataset.domain] || 0;
     t.textContent = `${fmtDuration(sec)} today`;
+  }
+  // Policy view: refresh schedule badge so "off now" stays current
+  const badge = qs('#schedule-status-badge');
+  if (badge && targetPolicyId) {
+    const p = livePolicies().find((x) => x.id === targetPolicyId);
+    if (p) {
+      badge.textContent = describeSchedule(p.schedule) + (isPolicyActive(p) ? '' : ' · off now');
+    }
   }
 }
 
@@ -583,18 +826,47 @@ function formatHistoryDate(iso) {
   });
 }
 
+// Handles both the minute-bucket shape ({[minute]: seconds}) and the legacy
+// flat-number shape carried over from older installs.
+function sumDomainEntry(entry) {
+  if (!entry) return 0;
+  if (typeof entry === 'number') return entry;
+  let total = 0;
+  for (const v of Object.values(entry)) total += v || 0;
+  return total;
+}
+
 async function loadHistory() {
   const panel = qs('#site-history-panel');
   panel.innerHTML = '<div class="empty">Loading…</div>';
 
-  const data = await browser.storage.local.get('usage');
-  const usage = data.usage || {};
+  const data = await browser.storage.local.get(['usage', 'device_id']);
+  const localUsage = data.usage || {};
+  const selfId = data.device_id;
 
-  const rows = [];
-  for (const [date, dayUsage] of Object.entries(usage)) {
-    const sec = dayUsage[targetDomain];
-    if (typeof sec === 'number' && sec > 0) rows.push({ date, sec });
+  // Lazy fetch full remote history once per page open (cached in module scope).
+  if (historyRemoteCache === null && (await getSession())) {
+    try {
+      const { shards = {} } = await fetchRemoteHistory();
+      if (selfId) delete shards[selfId];
+      historyRemoteCache = shards;
+    } catch {
+      historyRemoteCache = {};
+    }
   }
+  const remote = historyRemoteCache || {};
+
+  const dateTotals = new Map();
+  const accumulate = (shard) => {
+    for (const [date, dayUsage] of Object.entries(shard || {})) {
+      const sec = sumDomainEntry(dayUsage[targetDomain]);
+      if (sec > 0) dateTotals.set(date, (dateTotals.get(date) || 0) + sec);
+    }
+  };
+  accumulate(localUsage);
+  for (const shard of Object.values(remote)) accumulate(shard);
+
+  const rows = Array.from(dateTotals, ([date, sec]) => ({ date, sec }));
   rows.sort((a, b) => b.date.localeCompare(a.date));
 
   renderHistory(rows);
@@ -783,6 +1055,7 @@ async function createPolicy(initialDomains = []) {
     name: nextPolicyName(),
     domains: initialDomains.slice(),
     rules: [],
+    updated_at: Date.now(),
   };
   policies.push(policy);
   await savePolicies();
@@ -799,19 +1072,21 @@ async function removeCurrentSite() {
   if (!ok) return;
 
   let touched = false;
-  for (const p of policies) {
+  for (const p of livePolicies()) {
     if (p.domains.includes(targetDomain)) {
       p.domains = p.domains.filter((d) => d !== targetDomain);
+      touchPolicy(p);
       touched = true;
     }
   }
   if (touched) await savePolicies();
 
   const remaining = trackedDomains();
+  const live = livePolicies();
   if (remaining.length) {
     location.href = 'main.html?domain=' + encodeURIComponent(remaining[0]);
-  } else if (policies.length) {
-    location.href = 'main.html?policy=' + encodeURIComponent(policies[0].id);
+  } else if (live.length) {
+    location.href = 'main.html?policy=' + encodeURIComponent(live[0].id);
   } else {
     location.href = 'main.html';
   }
@@ -825,7 +1100,7 @@ function buildExport() {
   return {
     format: EXPORT_FORMAT,
     exportedAt: new Date().toISOString(),
-    policies,
+    policies: livePolicies(),
   };
 }
 
@@ -853,7 +1128,9 @@ function validateImport(parsed) {
   if (!Array.isArray(parsed.policies)) return 'Missing "policies" array.';
   for (const p of parsed.policies) {
     if (!p || typeof p !== 'object') return 'Policy entry is not an object.';
-    if (typeof p.id !== 'string' || typeof p.name !== 'string') return 'Policy missing id or name.';
+    if (typeof p.id !== 'string') return 'Policy missing id.';
+    if (p.deleted === true) continue;
+    if (typeof p.name !== 'string') return 'Policy missing name.';
     if (!Array.isArray(p.domains) || !p.domains.every((d) => typeof d === 'string')) {
       return 'Policy domains must be an array of strings.';
     }
@@ -863,6 +1140,19 @@ function validateImport(parsed) {
       if (r.type === 'daily' && typeof r.minutes !== 'number') return 'Daily rule missing minutes.';
       if (r.type === 'bucket' && (typeof r.capacityMin !== 'number' || typeof r.windowMin !== 'number')) {
         return 'Bucket rule missing capacityMin or windowMin.';
+      }
+    }
+    if (p.schedule !== undefined) {
+      if (!p.schedule || typeof p.schedule !== 'object' || !Array.isArray(p.schedule.windows)) {
+        return 'Policy schedule must be { windows: [...] }.';
+      }
+      for (const w of p.schedule.windows) {
+        if (!w || !Array.isArray(w.days) || !w.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6)) {
+          return 'Schedule window days must be integers 0–6.';
+        }
+        if (typeof w.startMin !== 'number' || typeof w.endMin !== 'number') {
+          return 'Schedule window missing startMin/endMin.';
+        }
       }
     }
   }
@@ -889,19 +1179,28 @@ async function importPoliciesFromFile(file) {
     return alertModal({ title: 'Import failed', message: err });
   }
 
+  const liveCount = livePolicies().length;
   const ok = await confirmModal({
-    title: 'Replace all policies?',
-    message: `This replaces your current ${policies.length} polic${policies.length === 1 ? 'y' : 'ies'} with ${parsed.policies.length} from the file.`,
-    okLabel: 'Replace and import',
+    title: 'Import policies?',
+    message: `Merges ${parsed.policies.length} polic${parsed.policies.length === 1 ? 'y' : 'ies'} from the file with your current ${liveCount}. Policies with the same id are overwritten by whichever has the more recent change.`,
+    okLabel: 'Import',
   });
   if (!ok) return;
 
-  await browser.storage.local.set({ policies: parsed.policies });
+  // Stamp updated_at on incoming policies so the merge prefers them by default.
+  const now = Date.now();
+  const incoming = parsed.policies.map((p) => ({
+    ...p,
+    updated_at: typeof p.updated_at === 'number' ? p.updated_at : now,
+  }));
+  const merged = mergePolicies(policies, incoming);
+  policies = merged;
+  await savePolicies();
   location.href = 'main.html?view=settings';
 }
 
 async function removeCurrentPolicy() {
-  const p = policies.find((x) => x.id === targetPolicyId);
+  const p = livePolicies().find((x) => x.id === targetPolicyId);
   if (!p) return;
   const ok = await confirmModal({
     title: `Remove "${p.name}"?`,
@@ -910,11 +1209,16 @@ async function removeCurrentPolicy() {
   });
   if (!ok) return;
 
-  policies = policies.filter((x) => x.id !== targetPolicyId);
+  // Replace with a tombstone so the deletion propagates through sync.
+  const idx = policies.findIndex((x) => x.id === targetPolicyId);
+  if (idx >= 0) {
+    policies[idx] = { id: targetPolicyId, deleted: true, updated_at: Date.now() };
+  }
   await savePolicies();
 
-  if (policies.length) {
-    location.href = 'main.html?policy=' + encodeURIComponent(policies[0].id);
+  const live = livePolicies();
+  if (live.length) {
+    location.href = 'main.html?policy=' + encodeURIComponent(live[0].id);
   } else {
     location.href = 'main.html';
   }
@@ -931,7 +1235,7 @@ qs('#site-add-policy-btn').addEventListener('click', () => {
 });
 
 qs('#add-rule-btn').addEventListener('click', () => {
-  const p = policies.find((x) => x.id === targetPolicyId);
+  const p = livePolicies().find((x) => x.id === targetPolicyId);
   if (!p) return;
   addRule(p, qs('#add-rule-type').value);
 });
@@ -1048,10 +1352,12 @@ async function handleVerify() {
       showSyncError('Signed in, but initial sync failed: ' + err.message);
     }
     await renderSync();
-    // Refresh policies UI in case sync pulled new data.
-    const data = await browser.storage.local.get('policies');
+    // Refresh policies + devices UI in case sync pulled new data.
+    const data = await browser.storage.local.get(['policies', 'devices']);
     policies = data.policies || [];
+    devices = data.devices || [];
     renderSidebar();
+    renderDevices();
   } catch (err) {
     showSyncError(err.message);
   } finally {
@@ -1067,11 +1373,21 @@ async function handleSyncNow() {
   btn.textContent = 'Syncing…';
   try {
     const result = await syncNow();
-    if (result.status === 'pulled' || result.status === 'conflict') {
+    if (result.policies.status === 'pulled' || result.policies.status === 'merged') {
       const data = await browser.storage.local.get('policies');
       policies = data.policies || [];
       renderSidebar();
+      // Re-render the currently-open view so changes to the active policy
+      // (e.g. an inbound schedule edit) appear without requiring a reload.
+      resolveView();
     }
+    if (result.devices.status === 'pulled' || result.devices.status === 'merged') {
+      const data = await browser.storage.local.get('devices');
+      devices = data.devices || [];
+      renderDevices();
+    }
+    // Invalidate the lazy history cache so a re-open re-fetches.
+    historyRemoteCache = null;
     await renderSync();
   } catch (err) {
     showSyncError(err.message);
@@ -1079,6 +1395,95 @@ async function handleSyncNow() {
     btn.disabled = false;
     btn.textContent = 'Sync now';
   }
+}
+
+/***************
+ * Devices UI
+ ***************/
+
+function liveDevices() {
+  return devices.filter((d) => !d.deleted);
+}
+
+async function renderDevices() {
+  const card = qs('#devices-card');
+  const session = await getSession();
+  if (!session) {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  const list = qs('#devices-list');
+  list.innerHTML = '';
+
+  const { device_id: selfId } = await browser.storage.local.get('device_id');
+  const live = liveDevices().slice().sort((a, b) => {
+    if (a.id === selfId) return -1;
+    if (b.id === selfId) return 1;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  if (!live.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'No devices registered yet.';
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const d of live) {
+    const row = document.createElement('div');
+    row.className = 'device-row';
+    row.dataset.deviceId = d.id;
+
+    const input = document.createElement('input');
+    input.className = 'device-name-input';
+    input.value = d.name || '';
+    input.spellcheck = false;
+    input.addEventListener('change', async () => {
+      const v = input.value.trim();
+      if (!v || v === d.name) {
+        input.value = d.name || '';
+        return;
+      }
+      d.name = v;
+      d.updated_at = Date.now();
+      await saveDevices();
+    });
+    row.appendChild(input);
+
+    if (d.id === selfId) {
+      const tag = document.createElement('span');
+      tag.className = 'device-tag';
+      tag.textContent = 'this device';
+      row.appendChild(tag);
+    } else {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn btn-ghost btn-remove-device';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', () => removeDevice(d));
+      row.appendChild(removeBtn);
+    }
+
+    list.appendChild(row);
+  }
+}
+
+async function removeDevice(d) {
+  const ok = await confirmModal({
+    title: `Remove "${d.name || 'device'}"?`,
+    message: 'Its tracked usage will be deleted from sync. The device entry can be re-created if it signs in again.',
+    okLabel: 'Remove',
+  });
+  if (!ok) return;
+
+  const idx = devices.findIndex((x) => x.id === d.id);
+  if (idx >= 0) {
+    devices[idx] = { id: d.id, deleted: true, updated_at: Date.now() };
+  }
+  await saveDevices();
+  renderDevices();
 }
 
 async function handleSignOut() {
@@ -1089,7 +1494,9 @@ async function handleSignOut() {
   });
   if (!ok) return;
   await signOut();
+  historyRemoteCache = null;
   await renderSync();
+  await renderDevices();
 }
 
 qs('#sync-send-code-btn').addEventListener('click', handleSendCode);

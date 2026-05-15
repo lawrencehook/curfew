@@ -26,7 +26,7 @@ function sharedSuffix() {
 }
 
 if (limitType === 'bucket') {
-  qs('#title').textContent = 'Slow down';
+  qs('#title').textContent = 'On cooldown';
   qs('#message').innerHTML =
     `You've used your quota on <strong>${esc(domain)}</strong>${sharedSuffix()}.`;
   qs('#sub').textContent = policyName

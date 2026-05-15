@@ -39,7 +39,9 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json({ limit: '256kb' }));
+// 6mb to accommodate usage shards (minute-granular history can grow into the MBs
+// for heavy multi-year users). Other routes parse much smaller payloads.
+app.use(express.json({ limit: '6mb' }));
 
 // Email is set by requireAuth (from JWT) for authed routes,
 // or read from the body on unauth routes like /auth/request-code.
