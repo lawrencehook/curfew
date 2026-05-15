@@ -583,6 +583,11 @@ function schedulesEqual(a, b) {
 
 function detectPreset(schedule) {
   if (!schedule || !schedule.windows || !schedule.windows.length) return 'always';
+  // Honor an explicit user choice of Custom — otherwise schedules that happen
+  // to match a preset's exact values (e.g. the Custom default is Mon-Fri 9-5,
+  // identical to workdays) would be detected back as that preset, closing the
+  // custom editor as soon as it opened.
+  if (schedule.custom) return 'custom';
   for (const [name, preset] of Object.entries(SCHEDULE_PRESETS)) {
     if (schedulesEqual(schedule, preset)) return name;
   }
@@ -590,6 +595,11 @@ function detectPreset(schedule) {
 }
 
 function minToHHMM(min) {
+  // <input type="time"> can't represent 24:00, only 23:59. The weekends preset
+  // (and any "end of day" window) stores endMin=1440 semantically; clamp the
+  // display so the input doesn't reject the value. The stored value is left
+  // untouched unless the user actually edits the field.
+  if (min >= 24 * 60) return '23:59';
   const h = Math.floor(min / 60);
   const m = min % 60;
   return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
@@ -635,9 +645,10 @@ function renderSchedule(p) {
     el.onchange = async () => {
       if (!el.checked) return;
       if (el.value === 'custom') {
-        if (!p.schedule || !p.schedule.windows || !p.schedule.windows.length) {
-          p.schedule = { windows: [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }] };
-        }
+        const windows = (p.schedule && p.schedule.windows && p.schedule.windows.length)
+          ? p.schedule.windows
+          : [{ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 }];
+        p.schedule = { custom: true, windows };
       } else {
         p.schedule = JSON.parse(JSON.stringify(SCHEDULE_PRESETS[el.value]));
       }
@@ -721,7 +732,7 @@ function renderScheduleWindows(p) {
   qs('#schedule-add-window').onclick = async () => {
     const ws = (p.schedule && p.schedule.windows) || [];
     ws.push({ days: [1, 2, 3, 4, 5], startMin: 9 * 60, endMin: 17 * 60 });
-    p.schedule = { windows: ws };
+    p.schedule = { custom: true, windows: ws };
     touchPolicy(p);
     await savePolicies();
     renderSchedule(p);
@@ -1352,6 +1363,9 @@ async function handleSyncNow() {
       const data = await browser.storage.local.get('policies');
       policies = data.policies || [];
       renderSidebar();
+      // Re-render the currently-open view so changes to the active policy
+      // (e.g. an inbound schedule edit) appear without requiring a reload.
+      resolveView();
     }
     if (result.devices.status === 'pulled' || result.devices.status === 'merged') {
       const data = await browser.storage.local.get('devices');

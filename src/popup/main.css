@@ -88,7 +88,7 @@ body {
 }
 
 .policy-card.off-schedule {
-  opacity: 0.6;
+  opacity: 0.75;
 }
 
 .policy-head {
@@ -99,6 +99,14 @@ body {
   margin-bottom: 6px;
 }
 
+.policy-head-left {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
 .policy-name {
   font-weight: 600;
   font-size: 12.5px;
@@ -106,6 +114,26 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.policy-status {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.policy-status[data-state="active"] {
+  color: #5d7d61;
+  background: #e3ebde;
+}
+
+.policy-status[data-state="off"] {
+  color: var(--text-secondary);
+  background: var(--border);
 }
 
 .policy-meta {
