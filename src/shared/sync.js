@@ -120,12 +120,27 @@ function mergeById(a, b) {
 }
 const mergePolicies = mergeById;
 
+// Canonical form: arrays preserve order, but object keys are sorted so that
+// two objects with the same fields in different insertion orders stringify
+// identically. Without this, a remote round-trip that happens to reorder keys
+// looks like a "change" and triggers a needless PUT — server bumps version
+// forever as devices ping-pong syncs.
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const sorted = {};
+    for (const k of Object.keys(value).sort()) sorted[k] = canonicalize(value[k]);
+    return sorted;
+  }
+  return value;
+}
+
 function listsEqual(a, b) {
   if (a === b) return true;
   if (!Array.isArray(a) || !Array.isArray(b)) return false;
   if (a.length !== b.length) return false;
   const sortById = (arr) => arr.slice().sort((x, y) => x.id.localeCompare(y.id));
-  return JSON.stringify(sortById(a)) === JSON.stringify(sortById(b));
+  return JSON.stringify(canonicalize(sortById(a))) === JSON.stringify(canonicalize(sortById(b)));
 }
 
 /***************
