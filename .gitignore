@@ -3,3 +3,4 @@ src/manifest.json
 src/web-ext-artifacts/
 extension.zip
 dist/
+MANUAL_TESTING.md
