@@ -145,7 +145,10 @@ function livePolicies() {
 
 // Absent/empty schedule = always active. Each window applies only on its
 // listed days (0=Sun..6=Sat), within [startMin, endMin) — same-day windows only.
+// `disabled: true` cascades through here so the entire policy (every rule)
+// stops blocking, the same way off-schedule does.
 function isPolicyActive(policy, now = new Date()) {
+  if (policy.disabled === true) return false;
   const sched = policy.schedule;
   if (!sched || !Array.isArray(sched.windows) || !sched.windows.length) return true;
   const day = now.getDay();
@@ -261,7 +264,12 @@ async function getExtensionCount(ruleId) {
  ***************/
 
 async function evalRule(policy, rule) {
-  const active = isPolicyActive(policy);
+  const policyActive = isPolicyActive(policy);
+  const disabled = rule.disabled === true;
+  // `active` reflects whether this rule can currently block. The policy-level
+  // disable / schedule already cascade through policyActive; rule-level
+  // disable suppresses just this rule.
+  const active = policyActive && !disabled;
   if (rule.type === 'daily') {
     let sec = 0;
     for (const d of policy.domains) sec += todayDomainSeconds(d);
@@ -275,14 +283,18 @@ async function evalRule(policy, rule) {
       progress: limitSec > 0 ? sec / limitSec : 1,
       current: sec,
       limit: limitSec,
-      remainingSec: Math.max(0, limitSec - sec),
+      // Inactive rules can't block, so suppress remainingSec — otherwise the
+      // "Block imminent" overlay would falsely countdown for off-schedule or
+      // disabled rules. The overlay/popup checks isFinite() and skips.
+      remainingSec: active ? Math.max(0, limitSec - sec) : Infinity,
       active,
+      disabled,
     };
   }
   if (rule.type === 'sliding') {
     const limitSec = rule.minutes * 60;
     const sec = slidingWindowSeconds(policy.domains, rule.windowMin);
-    // `remainingSec` here is the worst-case time-to-block (assumes the oldest
+    // `remainingSec` is the worst-case time-to-block (assumes the oldest
     // minutes in the window don't slide off freeing capacity). Good enough for
     // the ≤15s warning overlay — it errs on the side of warning slightly early.
     return {
@@ -293,8 +305,9 @@ async function evalRule(policy, rule) {
       progress: limitSec > 0 ? sec / limitSec : 1,
       current: sec,
       limit: limitSec,
-      remainingSec: Math.max(0, limitSec - sec),
+      remainingSec: active ? Math.max(0, limitSec - sec) : Infinity,
       active,
+      disabled,
     };
   }
   return null;

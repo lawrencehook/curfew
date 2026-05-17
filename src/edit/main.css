@@ -429,16 +429,23 @@ body {
 /* ── Limit rows ─────────────────────────────────────────── */
 .limit-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto 1fr auto;
   grid-template-areas:
-    "kind   remove"
-    "fields remove"
-    "status status"
-    "desc   desc";
+    "toggle kind   remove"
+    "toggle fields remove"
+    "status status status"
+    "desc   desc   desc";
   gap: 6px 12px;
   align-items: center;
   padding: 14px 0;
   border-top: 1px solid var(--border);
+}
+
+.limit-toggle {
+  grid-area: toggle;
+  align-self: center;
+  display: flex;
+  align-items: center;
 }
 
 .limit-row:first-child {
@@ -1148,4 +1155,44 @@ body {
 .device-row .btn-remove-device {
   font-size: 12px;
   padding: 4px 8px;
+}
+
+/* ── Enable/disable toggle ──────────────────────────────── */
+.curb-toggle {
+  width: 28px;
+  height: 18px;
+  flex-shrink: 0;
+  cursor: pointer;
+  outline: none;
+  display: block;
+}
+.curb-toggle:focus-visible {
+  filter: drop-shadow(0 0 2px var(--primary));
+}
+.curb-toggle .curb-toggle-track {
+  fill: var(--border-strong);
+  transition: fill 0.15s;
+}
+.curb-toggle .curb-toggle-knob {
+  fill: #fff;
+  transition: cx 0.15s;
+}
+.curb-toggle[active] .curb-toggle-track {
+  fill: var(--primary);
+}
+.curb-toggle[active] .curb-toggle-knob {
+  cx: 11px;
+}
+
+.policy-toggle-slot {
+  display: flex;
+  align-items: center;
+}
+
+/* Dimmed appearance when a policy or rule is toggled off. The toggle's own
+   gray/off state already reads as disabled, so applying opacity across the
+   whole element (toggle included) is fine and keeps the rule visually
+   coherent. */
+.is-disabled {
+  opacity: 0.55;
 }

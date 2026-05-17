@@ -157,7 +157,12 @@ function renderHeader() {
 function renderPolicies() {
   const list = qs('#policy-list');
   const empty = qs('#empty-state');
-  const policies = (state.policies || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  let policies = (state.policies || []).slice();
+  // When the popup is open on a tracked site, show only its policies.
+  if (matchedDomain) {
+    policies = policies.filter((p) => p.domains.includes(matchedDomain));
+  }
+  policies.sort((a, b) => a.name.localeCompare(b.name));
 
   if (!policies.length) {
     list.innerHTML = '';

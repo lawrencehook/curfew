@@ -148,6 +148,15 @@ function fmtDuration(sec) {
   return m + 'm';
 }
 
+// Pill-style on/off toggle. Active state is driven by the `active` attribute
+// on the <svg> root so the CSS can transition the circle without JS.
+function toggleSvg(active, label) {
+  return `<svg class="curb-toggle"${active ? ' active' : ''} viewBox="0 0 16 16" role="switch" aria-checked="${active ? 'true' : 'false'}" aria-label="${esc(label)}" tabindex="0">
+    <path class="curb-toggle-track" d="M 11, 3 H 5 C 2.239, 3, 0, 5.239, 0, 8 s 2.239, 5, 5, 5 h 6 c 2.761, 0, 5 -2.239, 5 -5 S 13.761, 3, 11, 3 z"/>
+    <circle class="curb-toggle-knob" cx="5" cy="8" r="3"/>
+  </svg>`;
+}
+
 /***************
  * View routing
  ***************/
@@ -325,11 +334,49 @@ function renderPolicyView(p) {
     renderSidebar();
   });
 
+  renderPolicyToggle(p);
   renderRules(p);
   renderPolicyDomains(p);
   renderSchedule(p);
   refreshAddRuleOptions(p);
   updateStatus();
+}
+
+function renderPolicyToggle(p) {
+  const slot = qs('#policy-toggle-slot');
+  if (!slot) return;
+  const enabled = p.disabled !== true;
+  slot.innerHTML = toggleSvg(enabled, enabled ? 'Disable policy' : 'Enable policy');
+  applyDisabledClass(qs('#policy-view'), !enabled);
+
+  // Mutate the attribute in place on flip so the SVG circle's `cx` transition
+  // animates rather than snapping (a re-render would build a fresh node).
+  const svg = qs('.curb-toggle', slot);
+  const flip = async () => {
+    if (p.disabled) delete p.disabled; else p.disabled = true;
+    touchPolicy(p);
+    setToggleState(svg, p.disabled !== true, p.disabled !== true ? 'Disable policy' : 'Enable policy');
+    applyDisabledClass(qs('#policy-view'), p.disabled === true);
+    await savePolicies();
+    renderSidebar();
+  };
+  svg.addEventListener('click', flip);
+  svg.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); }
+  });
+}
+
+function setToggleState(svg, enabled, label) {
+  if (!svg) return;
+  if (enabled) svg.setAttribute('active', '');
+  else svg.removeAttribute('active');
+  svg.setAttribute('aria-checked', enabled ? 'true' : 'false');
+  if (label) svg.setAttribute('aria-label', label);
+}
+
+function applyDisabledClass(el, disabled) {
+  if (!el) return;
+  el.classList.toggle('is-disabled', !!disabled);
 }
 
 function refreshAddRuleOptions(p) {
@@ -366,12 +413,15 @@ function renderRules(p) {
     el.className = 'limit-row';
     el.dataset.ruleId = r.id;
     el.innerHTML = renderRuleRow(r);
+    applyDisabledClass(el, r.disabled === true);
     attachRuleHandlers(el, p, r);
     list.appendChild(el);
   }
 }
 
 function renderRuleRow(r) {
+  const enabled = r.disabled !== true;
+  const toggle = `<div class="limit-toggle">${toggleSvg(enabled, enabled ? 'Disable rule' : 'Enable rule')}</div>`;
   const removeBtn = `<button class="btn btn-ghost btn-remove" data-rule-id="${esc(r.id)}">Remove</button>`;
   const status = `
     <div class="limit-status">
@@ -381,6 +431,7 @@ function renderRuleRow(r) {
 
   if (r.type === 'daily') {
     return `
+      ${toggle}
       <div class="limit-kind">Daily cap</div>
       <div class="limit-fields">
         <input type="number" class="fld-minutes" value="${r.minutes}" min="0" max="1440">
@@ -393,6 +444,7 @@ function renderRuleRow(r) {
 
   if (r.type === 'sliding') {
     return `
+      ${toggle}
       <div class="limit-kind">Rate (rolling window)</div>
       <div class="limit-fields">
         <input type="number" class="fld-capacity" value="${r.minutes}" min="0" max="1440">
@@ -405,7 +457,7 @@ function renderRuleRow(r) {
       ${removeBtn}`;
   }
 
-  return `<div class="limit-kind">Unknown rule</div>${removeBtn}`;
+  return `${toggle}<div class="limit-kind">Unknown rule</div>${removeBtn}`;
 }
 
 function attachRuleHandlers(el, p, r) {
@@ -426,7 +478,9 @@ function attachRuleHandlers(el, p, r) {
       const cv = parseInt(c.value, 10);
       const wv = parseInt(w.value, 10);
       if (isNaN(cv) || cv < 0 || isNaN(wv) || wv < 1) return;
-      r.minutes = cv;
+      // Clamp cap to window-1 — cap >= window is a no-op (max possible usage
+      // in a wv-minute window is wv minutes, never exceeds an equal cap).
+      r.minutes = cv >= wv ? Math.max(0, wv - 1) : cv;
       r.windowMin = wv;
       touchPolicy(p);
       await savePolicies();
@@ -438,6 +492,22 @@ function attachRuleHandlers(el, p, r) {
 
   const rm = qs('.btn-remove', el);
   if (rm) rm.addEventListener('click', () => removeRule(p, r));
+
+  const tog = qs('.curb-toggle', el);
+  if (tog) {
+    const flip = async () => {
+      if (r.disabled) delete r.disabled; else r.disabled = true;
+      touchPolicy(p);
+      const enabled = r.disabled !== true;
+      setToggleState(tog, enabled, enabled ? 'Disable rule' : 'Enable rule');
+      applyDisabledClass(el, !enabled);
+      await savePolicies();
+    };
+    tog.addEventListener('click', flip);
+    tog.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); }
+    });
+  }
 }
 
 async function removeRule(p, r) {
@@ -469,17 +539,12 @@ async function addRule(p, type) {
  * Policy domains
  ***************/
 
-// Returns the other policy that already covers `domain` with its own daily
-// rule, or null. Only used to surface an informational note — overlapping
-// daily caps across policies are allowed.
-function otherDailyCovering(p, domain) {
-  if (!p.rules.some((r) => r.type === 'daily')) return null;
-  return livePolicies().find(
-    (other) =>
-      other.id !== p.id &&
-      other.rules.some((r) => r.type === 'daily') &&
-      other.domains.includes(domain)
-  ) || null;
+// Returns every other live policy that lists `domain`. Used only for an
+// informational "also in …" note next to the domain row.
+function otherPoliciesContaining(p, domain) {
+  return livePolicies().filter(
+    (other) => other.id !== p.id && other.domains.includes(domain)
+  );
 }
 
 function renderPolicyDomains(p) {
@@ -494,8 +559,10 @@ function renderPolicyDomains(p) {
     const checked = p.domains.includes(d);
     let note = '';
     if (!checked) {
-      const other = otherDailyCovering(p, d);
-      if (other) note = `covered by "${other.name}"`;
+      const others = otherPoliciesContaining(p, d);
+      if (others.length) {
+        note = 'also in ' + others.map((o) => `"${o.name}"`).join(', ');
+      }
     }
 
     const id = 'dom-' + d.replace(/\W+/g, '-');
