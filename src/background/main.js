@@ -268,7 +268,6 @@ async function evalRule(policy, rule) {
     const ext = await getExtensionCount(rule.id);
     const limitSec = rule.minutes * 60 + ext * EXTENSION_BONUS;
     return {
-      policyId: policy.id,
       policyName: policy.name,
       ruleId: rule.id,
       type: 'daily',
@@ -277,7 +276,6 @@ async function evalRule(policy, rule) {
       current: sec,
       limit: limitSec,
       remainingSec: Math.max(0, limitSec - sec),
-      domains: policy.domains.slice(),
       active,
     };
   }
@@ -288,7 +286,6 @@ async function evalRule(policy, rule) {
     // minutes in the window don't slide off freeing capacity). Good enough for
     // the ≤15s warning overlay — it errs on the side of warning slightly early.
     return {
-      policyId: policy.id,
       policyName: policy.name,
       ruleId: rule.id,
       type: 'sliding',
@@ -297,7 +294,6 @@ async function evalRule(policy, rule) {
       current: sec,
       limit: limitSec,
       remainingSec: Math.max(0, limitSec - sec),
-      domains: policy.domains.slice(),
       active,
     };
   }
@@ -406,12 +402,8 @@ function blockTab(domain, result) {
   const p = new URLSearchParams({
     domain,
     type: result.type,
-    policyId: result.policyId,
     ruleId: result.ruleId,
     policyName: result.policyName || '',
-    spent: String(Math.floor(result.current)),
-    capacity: String(Math.floor(result.limit)),
-    domains: result.domains.join(','),
   });
   browser.tabs.update(tabId, {
     url: browser.runtime.getURL('blocked/main.html?' + p),

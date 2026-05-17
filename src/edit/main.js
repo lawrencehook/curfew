@@ -337,21 +337,10 @@ function refreshAddRuleOptions(p) {
   if (!select) return;
   const dailyOpt = qs('option[value="daily"]', select);
   const policyHasDaily = p.rules.some((r) => r.type === 'daily');
-  const conflict =
-    !policyHasDaily &&
-    p.domains.some((d) =>
-      livePolicies().some(
-        (other) =>
-          other.id !== p.id && other.rules.some((r) => r.type === 'daily') && other.domains.includes(d)
-      )
-    );
 
   if (policyHasDaily) {
     dailyOpt.disabled = true;
     dailyOpt.textContent = 'Daily cap (already added)';
-  } else if (conflict) {
-    dailyOpt.disabled = true;
-    dailyOpt.textContent = 'Daily cap (a domain is already covered by another policy)';
   } else {
     dailyOpt.disabled = false;
     dailyOpt.textContent = 'Daily cap';
@@ -480,10 +469,11 @@ async function addRule(p, type) {
  * Policy domains
  ***************/
 
-function dailyConflictsFor(p, domain) {
-  // Returns the conflicting policy if `domain` is covered by another policy's daily rule.
-  const policyHasDaily = p.rules.some((r) => r.type === 'daily');
-  if (!policyHasDaily) return null;
+// Returns the other policy that already covers `domain` with its own daily
+// rule, or null. Only used to surface an informational note — overlapping
+// daily caps across policies are allowed.
+function otherDailyCovering(p, domain) {
+  if (!p.rules.some((r) => r.type === 'daily')) return null;
   return livePolicies().find(
     (other) =>
       other.id !== p.id &&
@@ -502,21 +492,21 @@ function renderPolicyDomains(p) {
 
   for (const d of domains) {
     const checked = p.domains.includes(d);
-    let disabledReason = '';
+    let note = '';
     if (!checked) {
-      const conflict = dailyConflictsFor(p, d);
-      if (conflict) disabledReason = `Already covered by "${conflict.name}"`;
+      const other = otherDailyCovering(p, d);
+      if (other) note = `covered by "${other.name}"`;
     }
 
     const id = 'dom-' + d.replace(/\W+/g, '-');
     const row = document.createElement('label');
-    row.className = 'domain-row' + (disabledReason ? ' disabled' : '');
+    row.className = 'domain-row';
     row.htmlFor = id;
     row.dataset.domain = d;
     row.innerHTML = `
-      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} ${disabledReason ? 'disabled' : ''}>
+      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
       <span class="domain-name">${esc(d)}</span>
-      ${disabledReason ? `<span class="domain-note">${esc(disabledReason)}</span>` : ''}
+      ${note ? `<span class="domain-note">${esc(note)}</span>` : ''}
       ${checked ? `<span class="domain-time">—</span>` : ''}
     `;
     const cb = qs('input', row);
@@ -554,10 +544,6 @@ function renderPolicyDomains(p) {
       .replace(/\/.*$/, '');
     if (!raw || !raw.includes('.')) return;
     if (p.domains.includes(raw)) {
-      input.value = '';
-      return;
-    }
-    if (dailyConflictsFor(p, raw)) {
       input.value = '';
       return;
     }
