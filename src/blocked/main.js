@@ -3,43 +3,10 @@ const domain = params.get('domain') || 'unknown';
 const limitType = params.get('type') || 'daily';
 const ruleId = params.get('ruleId') || '';
 const policyName = params.get('policyName') || '';
-const spent = parseInt(params.get('spent'), 10) || 0;
-const capacity = parseInt(params.get('capacity'), 10) || 0;
-const sharedDomains = (params.get('domains') || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 
-function fmt(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return h + 'h ' + m + 'm';
-  if (m > 0) return m + ' minutes';
-  return seconds + ' seconds';
-}
-
-function sharedSuffix() {
-  const others = sharedDomains.filter((d) => d !== domain);
-  if (!others.length) return '';
-  if (others.length === 1) return ` (shared with <strong>${esc(others[0])}</strong>)`;
-  return ` (shared with <strong>${esc(others[0])}</strong> and ${others.length - 1} more)`;
-}
-
-if (limitType === 'bucket') {
-  qs('#title').textContent = 'On cooldown';
-  qs('#message').innerHTML =
-    `You've used your quota on <strong>${esc(domain)}</strong>${sharedSuffix()}.`;
-  qs('#sub').textContent = policyName
-    ? `Policy: ${policyName} — access refills over time.`
-    : 'Come back in a bit — access refills over time.';
-} else {
-  qs('#title').textContent = "Time's Up";
-  qs('#message').innerHTML =
-    `You've spent <strong>${esc(fmt(spent))}</strong> on <strong>${esc(domain)}</strong>${sharedSuffix()} today.`;
-  qs('#sub').innerHTML = policyName
-    ? `Daily limit: <span>${esc(fmt(capacity))}</span> · Policy: ${esc(policyName)}.`
-    : `Your daily limit was <span>${esc(fmt(capacity))}</span>.`;
-}
+qs('#title').textContent = limitType === 'sliding' ? 'On cooldown' : 'Daily limit reached';
+qs('#message').innerHTML = `<strong>${esc(domain)}</strong>`;
+qs('#sub').textContent = policyName ? `Policy: ${policyName}` : '';
 
 const extendBtn = qs('#extend-btn');
 const dateKey = new Date().toISOString().slice(0, 10);

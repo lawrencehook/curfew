@@ -18,7 +18,11 @@ async function loadCurrentTab() {
   try {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     if (!tabs[0] || !tabs[0].url) return;
-    currentHost = new URL(tabs[0].url).hostname || null;
+    const u = new URL(tabs[0].url);
+    // Only real web pages are trackable. Excludes chrome://, about:,
+    // chrome-extension://, moz-extension://, file://, data:, etc.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+    currentHost = u.hostname || null;
   } catch {
     currentHost = null;
   }
@@ -51,18 +55,14 @@ function fmtMin(sec) {
 
 function ruleKindLabel(rule) {
   if (rule.type === 'daily') return 'Daily';
-  if (rule.type === 'bucket') return `Rate · ${rule.capacityMin}m / ${rule.windowMin}m`;
+  if (rule.type === 'sliding') return `Rate · ${rule.minutes}m / ${rule.windowMin}m`;
   return '';
 }
 
 function ruleStat(e) {
   if (!e) return '—';
-  if (e.type === 'daily') {
+  if (e.type === 'daily' || e.type === 'sliding') {
     return `${fmtMin(e.current)} / ${fmtMin(e.limit)}`;
-  }
-  if (e.type === 'bucket') {
-    const remaining = Math.max(0, e.limit - e.current);
-    return `${fmtMin(remaining)} / ${fmtMin(e.limit)} left`;
   }
   return '';
 }
@@ -71,9 +71,67 @@ function ruleStat(e) {
  * Render
  ***************/
 
+const WARN_THRESHOLD_SEC = 15;
+
+function tightestActiveRule() {
+  if (!matchedDomain) return null;
+  let best = null;
+  for (const p of state.policies || []) {
+    if (!p.domains.includes(matchedDomain)) continue;
+    for (const r of p.rules) {
+      const e = state.ruleEvals && state.ruleEvals[r.id];
+      if (!e || e.blocked) continue;
+      const remaining = e.remainingSec;
+      if (!isFinite(remaining) || remaining <= 0) continue;
+      if (!best || remaining < best.remaining) {
+        best = { policy: p, rule: r, remaining };
+      }
+    }
+  }
+  return best;
+}
+
 function render() {
   renderHeader();
+  renderWarn();
+  renderTrack();
   renderPolicies();
+}
+
+function renderTrack() {
+  const banner = qs('#track-banner');
+  if (!currentHost || matchedDomain) {
+    banner.classList.add('hidden');
+    return;
+  }
+  banner.classList.remove('hidden');
+  qs('#track-host').textContent = currentHost.replace(/^www\./, '');
+}
+
+function renderWarn() {
+  const banner = qs('#warn-banner');
+  const tight = tightestActiveRule();
+  if (!tight || tight.remaining > WARN_THRESHOLD_SEC) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  banner.classList.remove('hidden');
+  qs('#warn-seconds').textContent = Math.max(0, Math.ceil(tight.remaining));
+  qs('#warn-sub').textContent = tight.policy.name + ' · ' + matchedDomain;
+
+  const extendBtn = qs('#warn-extend');
+  if (tight.rule.type === 'daily') {
+    extendBtn.classList.remove('hidden');
+    if (extendBtn.dataset.ruleId !== tight.rule.id) {
+      extendBtn.dataset.ruleId = tight.rule.id;
+      extendBtn.disabled = false;
+      extendBtn.textContent = '+1 min';
+    }
+  } else {
+    extendBtn.classList.add('hidden');
+    delete extendBtn.dataset.ruleId;
+  }
 }
 
 function renderHeader() {
@@ -99,7 +157,12 @@ function renderHeader() {
 function renderPolicies() {
   const list = qs('#policy-list');
   const empty = qs('#empty-state');
-  const policies = (state.policies || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  let policies = (state.policies || []).slice();
+  // When the popup is open on a tracked site, show only its policies.
+  if (matchedDomain) {
+    policies = policies.filter((p) => p.domains.includes(matchedDomain));
+  }
+  policies.sort((a, b) => a.name.localeCompare(b.name));
 
   if (!policies.length) {
     list.innerHTML = '';
@@ -220,6 +283,30 @@ qs('#manage-btn').addEventListener('click', () => {
     url: browser.runtime.getURL('edit/main.html'),
   });
   window.close();
+});
+
+qs('#track-btn').addEventListener('click', () => {
+  if (!currentHost) return;
+  const domain = currentHost.replace(/^www\./, '');
+  browser.tabs.create({
+    url: browser.runtime.getURL(
+      'edit/main.html?newPolicyDomain=' + encodeURIComponent(domain)
+    ),
+  });
+  window.close();
+});
+
+qs('#warn-extend').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const ruleId = btn.dataset.ruleId;
+  if (!ruleId || btn.disabled) return;
+  btn.disabled = true;
+  const resp = await browser.runtime.sendMessage({ type: 'extendTime', ruleId });
+  if (!resp || !resp.success) {
+    btn.textContent = 'used';
+  } else {
+    fetchStatus();
+  }
 });
 
 window.addEventListener('unload', () => {

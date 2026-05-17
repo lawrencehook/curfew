@@ -2,6 +2,7 @@ const params = new URLSearchParams(location.search);
 const targetDomain = params.get('domain') || '';
 const targetPolicyId = params.get('policy') || '';
 const targetView = params.get('view') || '';
+const newPolicyDomain = params.get('newPolicyDomain') || '';
 
 const EXPORT_FORMAT = 'curb-export-v1';
 
@@ -22,6 +23,19 @@ async function load() {
   const data = await browser.storage.local.get(['policies', 'devices']);
   policies = data.policies || [];
   devices = data.devices || [];
+
+  if (newPolicyDomain) {
+    const d = newPolicyDomain.toLowerCase().replace(/^www\./, '');
+    if (d) {
+      const existing = livePolicies().find((p) => p.domains.includes(d));
+      if (existing) {
+        location.href = 'main.html?policy=' + encodeURIComponent(existing.id);
+      } else {
+        await createPolicy([d]);
+      }
+      return;
+    }
+  }
 
   renderSidebar();
   resolveView();
@@ -109,13 +123,13 @@ function nextPolicyName() {
 
 function ruleSummary(r) {
   if (r.type === 'daily') return `${r.minutes}m / day`;
-  if (r.type === 'bucket') return `${r.capacityMin}m per ${r.windowMin}m`;
+  if (r.type === 'sliding') return `${r.minutes}m per ${r.windowMin}m`;
   return 'rule';
 }
 
 function ruleTypeName(r) {
   if (r.type === 'daily') return 'Daily cap';
-  if (r.type === 'bucket') return 'Rate (leaky bucket)';
+  if (r.type === 'sliding') return 'Rate (rolling window)';
   return 'Rule';
 }
 
@@ -132,6 +146,15 @@ function fmtDuration(sec) {
   const m = Math.floor((sec % 3600) / 60);
   if (h > 0) return h + 'h ' + m + 'm';
   return m + 'm';
+}
+
+// Pill-style on/off toggle. Active state is driven by the `active` attribute
+// on the <svg> root so the CSS can transition the circle without JS.
+function toggleSvg(active, label) {
+  return `<svg class="curb-toggle"${active ? ' active' : ''} viewBox="0 0 16 16" role="switch" aria-checked="${active ? 'true' : 'false'}" aria-label="${esc(label)}" tabindex="0">
+    <path class="curb-toggle-track" d="M 11, 3 H 5 C 2.239, 3, 0, 5.239, 0, 8 s 2.239, 5, 5, 5 h 6 c 2.761, 0, 5 -2.239, 5 -5 S 13.761, 3, 11, 3 z"/>
+    <circle class="curb-toggle-knob" cx="5" cy="8" r="3"/>
+  </svg>`;
 }
 
 /***************
@@ -311,6 +334,7 @@ function renderPolicyView(p) {
     renderSidebar();
   });
 
+  renderPolicyToggle(p);
   renderRules(p);
   renderPolicyDomains(p);
   renderSchedule(p);
@@ -318,32 +342,58 @@ function renderPolicyView(p) {
   updateStatus();
 }
 
+function renderPolicyToggle(p) {
+  const slot = qs('#policy-toggle-slot');
+  if (!slot) return;
+  const enabled = p.disabled !== true;
+  slot.innerHTML = toggleSvg(enabled, enabled ? 'Disable policy' : 'Enable policy');
+  applyDisabledClass(qs('#policy-view'), !enabled);
+
+  // Mutate the attribute in place on flip so the SVG circle's `cx` transition
+  // animates rather than snapping (a re-render would build a fresh node).
+  const svg = qs('.curb-toggle', slot);
+  const flip = async () => {
+    if (p.disabled) delete p.disabled; else p.disabled = true;
+    touchPolicy(p);
+    setToggleState(svg, p.disabled !== true, p.disabled !== true ? 'Disable policy' : 'Enable policy');
+    applyDisabledClass(qs('#policy-view'), p.disabled === true);
+    await savePolicies();
+    renderSidebar();
+  };
+  svg.addEventListener('click', flip);
+  svg.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); }
+  });
+}
+
+function setToggleState(svg, enabled, label) {
+  if (!svg) return;
+  if (enabled) svg.setAttribute('active', '');
+  else svg.removeAttribute('active');
+  svg.setAttribute('aria-checked', enabled ? 'true' : 'false');
+  if (label) svg.setAttribute('aria-label', label);
+}
+
+function applyDisabledClass(el, disabled) {
+  if (!el) return;
+  el.classList.toggle('is-disabled', !!disabled);
+}
+
 function refreshAddRuleOptions(p) {
   const select = qs('#add-rule-type');
   if (!select) return;
   const dailyOpt = qs('option[value="daily"]', select);
   const policyHasDaily = p.rules.some((r) => r.type === 'daily');
-  const conflict =
-    !policyHasDaily &&
-    p.domains.some((d) =>
-      livePolicies().some(
-        (other) =>
-          other.id !== p.id && other.rules.some((r) => r.type === 'daily') && other.domains.includes(d)
-      )
-    );
 
   if (policyHasDaily) {
     dailyOpt.disabled = true;
     dailyOpt.textContent = 'Daily cap (already added)';
-  } else if (conflict) {
-    dailyOpt.disabled = true;
-    dailyOpt.textContent = 'Daily cap (a domain is already covered by another policy)';
   } else {
     dailyOpt.disabled = false;
     dailyOpt.textContent = 'Daily cap';
   }
 
-  if (dailyOpt.disabled && select.value === 'daily') select.value = 'bucket';
+  if (dailyOpt.disabled && select.value === 'daily') select.value = 'sliding';
 }
 
 function renderRules(p) {
@@ -363,12 +413,15 @@ function renderRules(p) {
     el.className = 'limit-row';
     el.dataset.ruleId = r.id;
     el.innerHTML = renderRuleRow(r);
+    applyDisabledClass(el, r.disabled === true);
     attachRuleHandlers(el, p, r);
     list.appendChild(el);
   }
 }
 
 function renderRuleRow(r) {
+  const enabled = r.disabled !== true;
+  const toggle = `<div class="limit-toggle">${toggleSvg(enabled, enabled ? 'Disable rule' : 'Enable rule')}</div>`;
   const removeBtn = `<button class="btn btn-ghost btn-remove" data-rule-id="${esc(r.id)}">Remove</button>`;
   const status = `
     <div class="limit-status">
@@ -378,6 +431,7 @@ function renderRuleRow(r) {
 
   if (r.type === 'daily') {
     return `
+      ${toggle}
       <div class="limit-kind">Daily cap</div>
       <div class="limit-fields">
         <input type="number" class="fld-minutes" value="${r.minutes}" min="0" max="1440">
@@ -388,21 +442,22 @@ function renderRuleRow(r) {
       ${removeBtn}`;
   }
 
-  if (r.type === 'bucket') {
+  if (r.type === 'sliding') {
     return `
-      <div class="limit-kind">Rate (leaky bucket)</div>
+      ${toggle}
+      <div class="limit-kind">Rate (rolling window)</div>
       <div class="limit-fields">
-        <input type="number" class="fld-capacity" value="${r.capacityMin}" min="0" max="1440">
-        <span>min per</span>
+        <input type="number" class="fld-capacity" value="${r.minutes}" min="0" max="1440">
+        <span>min in any</span>
         <input type="number" class="fld-window" value="${r.windowMin}" min="1" max="1440">
         <span>min window</span>
       </div>
       ${status}
-      <div class="limit-desc">Grants up to <strong>${r.capacityMin}</strong> min of access shared across domains, refilling continuously over a <strong>${r.windowMin}</strong> min window.</div>
+      <div class="limit-desc">Blocks the policy when total usage across its domains exceeds <strong>${r.minutes}</strong> min within any rolling <strong>${r.windowMin}</strong> min window.</div>
       ${removeBtn}`;
   }
 
-  return `<div class="limit-kind">Unknown rule</div>${removeBtn}`;
+  return `${toggle}<div class="limit-kind">Unknown rule</div>${removeBtn}`;
 }
 
 function attachRuleHandlers(el, p, r) {
@@ -416,14 +471,16 @@ function attachRuleHandlers(el, p, r) {
       await savePolicies();
     });
   }
-  if (r.type === 'bucket') {
+  if (r.type === 'sliding') {
     const c = qs('.fld-capacity', el);
     const w = qs('.fld-window', el);
     const onChange = async () => {
       const cv = parseInt(c.value, 10);
       const wv = parseInt(w.value, 10);
       if (isNaN(cv) || cv < 0 || isNaN(wv) || wv < 1) return;
-      r.capacityMin = cv;
+      // Clamp cap to window-1 — cap >= window is a no-op (max possible usage
+      // in a wv-minute window is wv minutes, never exceeds an equal cap).
+      r.minutes = cv >= wv ? Math.max(0, wv - 1) : cv;
       r.windowMin = wv;
       touchPolicy(p);
       await savePolicies();
@@ -435,6 +492,22 @@ function attachRuleHandlers(el, p, r) {
 
   const rm = qs('.btn-remove', el);
   if (rm) rm.addEventListener('click', () => removeRule(p, r));
+
+  const tog = qs('.curb-toggle', el);
+  if (tog) {
+    const flip = async () => {
+      if (r.disabled) delete r.disabled; else r.disabled = true;
+      touchPolicy(p);
+      const enabled = r.disabled !== true;
+      setToggleState(tog, enabled, enabled ? 'Disable rule' : 'Enable rule');
+      applyDisabledClass(el, !enabled);
+      await savePolicies();
+    };
+    tog.addEventListener('click', flip);
+    tog.addEventListener('keydown', (e) => {
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); flip(); }
+    });
+  }
 }
 
 async function removeRule(p, r) {
@@ -451,8 +524,8 @@ async function addRule(p, type) {
   if (type === 'daily') {
     if (p.rules.some((r) => r.type === 'daily')) return;
     rule = { id: newId(), type: 'daily', minutes: 30 };
-  } else if (type === 'bucket') {
-    rule = { id: newId(), type: 'bucket', capacityMin: 5, windowMin: 30 };
+  } else if (type === 'sliding') {
+    rule = { id: newId(), type: 'sliding', minutes: 5, windowMin: 30 };
   } else return;
   p.rules.push(rule);
   touchPolicy(p);
@@ -466,16 +539,12 @@ async function addRule(p, type) {
  * Policy domains
  ***************/
 
-function dailyConflictsFor(p, domain) {
-  // Returns the conflicting policy if `domain` is covered by another policy's daily rule.
-  const policyHasDaily = p.rules.some((r) => r.type === 'daily');
-  if (!policyHasDaily) return null;
-  return livePolicies().find(
-    (other) =>
-      other.id !== p.id &&
-      other.rules.some((r) => r.type === 'daily') &&
-      other.domains.includes(domain)
-  ) || null;
+// Returns every other live policy that lists `domain`. Used only for an
+// informational "also in …" note next to the domain row.
+function otherPoliciesContaining(p, domain) {
+  return livePolicies().filter(
+    (other) => other.id !== p.id && other.domains.includes(domain)
+  );
 }
 
 function renderPolicyDomains(p) {
@@ -488,21 +557,23 @@ function renderPolicyDomains(p) {
 
   for (const d of domains) {
     const checked = p.domains.includes(d);
-    let disabledReason = '';
+    let note = '';
     if (!checked) {
-      const conflict = dailyConflictsFor(p, d);
-      if (conflict) disabledReason = `Already covered by "${conflict.name}"`;
+      const others = otherPoliciesContaining(p, d);
+      if (others.length) {
+        note = 'also in ' + others.map((o) => `"${o.name}"`).join(', ');
+      }
     }
 
     const id = 'dom-' + d.replace(/\W+/g, '-');
     const row = document.createElement('label');
-    row.className = 'domain-row' + (disabledReason ? ' disabled' : '');
+    row.className = 'domain-row';
     row.htmlFor = id;
     row.dataset.domain = d;
     row.innerHTML = `
-      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''} ${disabledReason ? 'disabled' : ''}>
+      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}>
       <span class="domain-name">${esc(d)}</span>
-      ${disabledReason ? `<span class="domain-note">${esc(disabledReason)}</span>` : ''}
+      ${note ? `<span class="domain-note">${esc(note)}</span>` : ''}
       ${checked ? `<span class="domain-time">—</span>` : ''}
     `;
     const cb = qs('input', row);
@@ -540,10 +611,6 @@ function renderPolicyDomains(p) {
       .replace(/\/.*$/, '');
     if (!raw || !raw.includes('.')) return;
     if (p.domains.includes(raw)) {
-      input.value = '';
-      return;
-    }
-    if (dailyConflictsFor(p, raw)) {
       input.value = '';
       return;
     }
@@ -753,11 +820,8 @@ function applyStatus(fillEl, textEl, e) {
   const pct = Math.min(100, Math.max(0, e.progress * 100));
   fillEl.style.width = pct + '%';
   fillEl.style.background = statusColor(pct);
-  if (e.type === 'daily') {
+  if (e.type === 'daily' || e.type === 'sliding') {
     textEl.textContent = `${fmtDuration(e.current)} / ${fmtDuration(e.limit)}`;
-  } else if (e.type === 'bucket') {
-    const remaining = Math.max(0, e.limit - e.current);
-    textEl.textContent = `${fmtDuration(remaining)} available`;
   }
   if (e.active === false) textEl.textContent += ' · off-schedule';
 }
@@ -1124,6 +1188,10 @@ function validateImport(parsed) {
     for (const r of p.rules) {
       if (!r || typeof r.id !== 'string' || typeof r.type !== 'string') return 'Rule missing id or type.';
       if (r.type === 'daily' && typeof r.minutes !== 'number') return 'Daily rule missing minutes.';
+      if (r.type === 'sliding' && (typeof r.minutes !== 'number' || typeof r.windowMin !== 'number')) {
+        return 'Sliding rule missing minutes or windowMin.';
+      }
+      // Old export format compatibility — bucket rules will be migrated on load.
       if (r.type === 'bucket' && (typeof r.capacityMin !== 'number' || typeof r.windowMin !== 'number')) {
         return 'Bucket rule missing capacityMin or windowMin.';
       }

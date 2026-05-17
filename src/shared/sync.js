@@ -9,7 +9,9 @@
 //   last_signed_in_email:   string                        — survives sign-out so we can detect
 //                                                          account switches and wipe local state
 //   usage_remote_today:     { [date]: { [deviceId]: { [domain]: { [minute]: seconds } } } }
-//                           — siblings' today-slice, refreshed each sync
+//                           — siblings' recent slices (today + yesterday),
+//                             refreshed each sync. Yesterday is included so
+//                             sliding-window rules can straddle midnight.
 //
 // Merge models:
 //   - policies & devices: merged by `id` with last-write-wins on `updated_at`.
@@ -316,6 +318,16 @@ function todayDateKey() {
   ].join('-');
 }
 
+function yesterdayDateKey() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    String(d.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
 async function putLocalUsage(deviceId, shard) {
   const r = await authedFetch('/sync/usage', {
     method: 'PUT',
@@ -333,8 +345,9 @@ async function fetchRemoteUsageToday(date) {
   return r.json();
 }
 
-// PUT local shard, then GET today's slice into usage_remote_today.
-// Returns { status: 'synced' | 'no_device', deviceCount }.
+// PUT local shard, then GET today's + yesterday's slices into
+// usage_remote_today. (Yesterday is included so sliding-window rules can
+// straddle midnight.) Returns { status: 'synced' | 'no_device', deviceCount }.
 async function syncUsageNow() {
   const data = await browser.storage.local.get(['device_id', 'usage']);
   const deviceId = data.device_id;
@@ -342,14 +355,23 @@ async function syncUsageNow() {
     return { status: 'no_device', deviceCount: 0 };
   }
   const shard = data.usage || {};
-  const date = todayDateKey();
+  const today = todayDateKey();
+  const yesterday = yesterdayDateKey();
 
   try {
     await putLocalUsage(deviceId, shard);
-    const { shards = {} } = await fetchRemoteUsageToday(date);
-    delete shards[deviceId];
-    await browser.storage.local.set({ usage_remote_today: { [date]: shards } });
-    return { status: 'synced', deviceCount: Object.keys(shards).length + 1 };
+    const [todayResp, yesterdayResp] = await Promise.all([
+      fetchRemoteUsageToday(today),
+      fetchRemoteUsageToday(yesterday),
+    ]);
+    const todayShards = todayResp.shards || {};
+    const yesterdayShards = yesterdayResp.shards || {};
+    delete todayShards[deviceId];
+    delete yesterdayShards[deviceId];
+    await browser.storage.local.set({
+      usage_remote_today: { [today]: todayShards, [yesterday]: yesterdayShards },
+    });
+    return { status: 'synced', deviceCount: Object.keys(todayShards).length + 1 };
   } catch (err) {
     await setSyncState({ last_error: err.message });
     throw err;

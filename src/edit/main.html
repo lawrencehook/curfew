@@ -70,6 +70,7 @@
           <div id="policy-view" class="hidden">
             <section class="card">
               <div class="policy-name-row">
+                <div id="policy-toggle-slot" class="policy-toggle-slot"></div>
                 <label for="policy-name-input" class="field-label">Name</label>
                 <input id="policy-name-input" class="policy-name-input" type="text" maxlength="80" spellcheck="false">
               </div>
@@ -81,14 +82,14 @@
                 <div class="add-limit">
                   <select id="add-rule-type">
                     <option value="daily">Daily cap</option>
-                    <option value="bucket">Rate (leaky bucket)</option>
+                    <option value="sliding">Rate (rolling window)</option>
                   </select>
                   <button id="add-rule-btn" class="btn btn-primary">Add rule</button>
                 </div>
               </div>
               <p class="hint">
                 Each rule independently blocks the policy's domains. The tightest rule wins.
-                Stack daily caps with bursty buckets for nuanced shape.
+                Stack daily caps with rolling windows for nuanced shape.
               </p>
               <div id="rules-list"></div>
             </section>
@@ -110,7 +111,7 @@
                 <span class="badge" id="schedule-status-badge">always on</span>
               </div>
               <p class="hint">
-                When this policy enforces its rules. Off-schedule, rules don't block and rate buckets pause.
+                When this policy enforces its rules. Off-schedule, rules don't block.
               </p>
               <div class="schedule-presets" id="schedule-presets">
                 <label><input type="radio" name="schedule-preset" value="always"> Always on</label>

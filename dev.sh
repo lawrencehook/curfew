@@ -43,6 +43,14 @@ case "$browser" in
       name=$(basename "$path")
       case "$name" in
         *_manifest.json|manifest.json|web-ext-artifacts) continue ;;
+        # Chrome silently serves an empty body for content scripts loaded
+        # through a directory symlink, so the overlay never injects. Real
+        # copy works. Edits to src/content/ require re-running ./dev.sh chrome.
+        content)
+          rm -rf "$dst/$name"
+          cp -R "$path" "$dst/$name"
+          continue
+          ;;
       esac
       ln -snf "$path" "$dst/$name"
     done
@@ -50,5 +58,6 @@ case "$browser" in
     cp "$src/chrome_manifest.json" "$dst/manifest.json"
     echo "Ready: $dst"
     echo "In chrome://extensions, enable Developer mode and 'Load unpacked' → $dst"
+    echo "Note: src/content/ is copied, not symlinked. Re-run this script after editing it."
     ;;
 esac
