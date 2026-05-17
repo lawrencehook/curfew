@@ -4,7 +4,7 @@
 ---
 
 ### What it does
-Sets daily caps and leaky-bucket rate limits on distracting sites. Firefox (MV2) and Chrome (MV3).
+Sets daily caps and rolling-window rate limits on distracting sites. Firefox (MV2) and Chrome (MV3).
 
 ---
 

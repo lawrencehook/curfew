@@ -27,7 +27,7 @@ async function load() {
   if (newPolicyDomain) {
     const d = newPolicyDomain.toLowerCase().replace(/^www\./, '');
     if (d) {
-      const existing = policies.find((p) => p.domains.includes(d));
+      const existing = livePolicies().find((p) => p.domains.includes(d));
       if (existing) {
         location.href = 'main.html?policy=' + encodeURIComponent(existing.id);
       } else {
@@ -123,13 +123,13 @@ function nextPolicyName() {
 
 function ruleSummary(r) {
   if (r.type === 'daily') return `${r.minutes}m / day`;
-  if (r.type === 'bucket') return `${r.capacityMin}m per ${r.windowMin}m`;
+  if (r.type === 'sliding') return `${r.minutes}m per ${r.windowMin}m`;
   return 'rule';
 }
 
 function ruleTypeName(r) {
   if (r.type === 'daily') return 'Daily cap';
-  if (r.type === 'bucket') return 'Rate (leaky bucket)';
+  if (r.type === 'sliding') return 'Rate (rolling window)';
   return 'Rule';
 }
 
@@ -357,7 +357,7 @@ function refreshAddRuleOptions(p) {
     dailyOpt.textContent = 'Daily cap';
   }
 
-  if (dailyOpt.disabled && select.value === 'daily') select.value = 'bucket';
+  if (dailyOpt.disabled && select.value === 'daily') select.value = 'sliding';
 }
 
 function renderRules(p) {
@@ -402,17 +402,17 @@ function renderRuleRow(r) {
       ${removeBtn}`;
   }
 
-  if (r.type === 'bucket') {
+  if (r.type === 'sliding') {
     return `
-      <div class="limit-kind">Rate (leaky bucket)</div>
+      <div class="limit-kind">Rate (rolling window)</div>
       <div class="limit-fields">
-        <input type="number" class="fld-capacity" value="${r.capacityMin}" min="0" max="1440">
-        <span>min per</span>
+        <input type="number" class="fld-capacity" value="${r.minutes}" min="0" max="1440">
+        <span>min in any</span>
         <input type="number" class="fld-window" value="${r.windowMin}" min="1" max="1440">
         <span>min window</span>
       </div>
       ${status}
-      <div class="limit-desc">Grants up to <strong>${r.capacityMin}</strong> min of access shared across domains, refilling continuously over a <strong>${r.windowMin}</strong> min window.</div>
+      <div class="limit-desc">Blocks the policy when total usage across its domains exceeds <strong>${r.minutes}</strong> min within any rolling <strong>${r.windowMin}</strong> min window.</div>
       ${removeBtn}`;
   }
 
@@ -430,14 +430,14 @@ function attachRuleHandlers(el, p, r) {
       await savePolicies();
     });
   }
-  if (r.type === 'bucket') {
+  if (r.type === 'sliding') {
     const c = qs('.fld-capacity', el);
     const w = qs('.fld-window', el);
     const onChange = async () => {
       const cv = parseInt(c.value, 10);
       const wv = parseInt(w.value, 10);
       if (isNaN(cv) || cv < 0 || isNaN(wv) || wv < 1) return;
-      r.capacityMin = cv;
+      r.minutes = cv;
       r.windowMin = wv;
       touchPolicy(p);
       await savePolicies();
@@ -465,8 +465,8 @@ async function addRule(p, type) {
   if (type === 'daily') {
     if (p.rules.some((r) => r.type === 'daily')) return;
     rule = { id: newId(), type: 'daily', minutes: 30 };
-  } else if (type === 'bucket') {
-    rule = { id: newId(), type: 'bucket', capacityMin: 5, windowMin: 30 };
+  } else if (type === 'sliding') {
+    rule = { id: newId(), type: 'sliding', minutes: 5, windowMin: 30 };
   } else return;
   p.rules.push(rule);
   touchPolicy(p);
@@ -767,11 +767,8 @@ function applyStatus(fillEl, textEl, e) {
   const pct = Math.min(100, Math.max(0, e.progress * 100));
   fillEl.style.width = pct + '%';
   fillEl.style.background = statusColor(pct);
-  if (e.type === 'daily') {
+  if (e.type === 'daily' || e.type === 'sliding') {
     textEl.textContent = `${fmtDuration(e.current)} / ${fmtDuration(e.limit)}`;
-  } else if (e.type === 'bucket') {
-    const remaining = Math.max(0, e.limit - e.current);
-    textEl.textContent = `${fmtDuration(remaining)} available`;
   }
   if (e.active === false) textEl.textContent += ' · off-schedule';
 }
@@ -1138,6 +1135,10 @@ function validateImport(parsed) {
     for (const r of p.rules) {
       if (!r || typeof r.id !== 'string' || typeof r.type !== 'string') return 'Rule missing id or type.';
       if (r.type === 'daily' && typeof r.minutes !== 'number') return 'Daily rule missing minutes.';
+      if (r.type === 'sliding' && (typeof r.minutes !== 'number' || typeof r.windowMin !== 'number')) {
+        return 'Sliding rule missing minutes or windowMin.';
+      }
+      // Old export format compatibility — bucket rules will be migrated on load.
       if (r.type === 'bucket' && (typeof r.capacityMin !== 'number' || typeof r.windowMin !== 'number')) {
         return 'Bucket rule missing capacityMin or windowMin.';
       }

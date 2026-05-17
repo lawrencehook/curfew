@@ -25,13 +25,13 @@ function sharedSuffix() {
   return ` (shared with <strong>${esc(others[0])}</strong> and ${others.length - 1} more)`;
 }
 
-if (limitType === 'bucket') {
+if (limitType === 'sliding') {
   qs('#title').textContent = 'On cooldown';
   qs('#message').innerHTML =
     `You've used your quota on <strong>${esc(domain)}</strong>${sharedSuffix()}.`;
   qs('#sub').textContent = policyName
-    ? `Policy: ${policyName} — access refills over time.`
-    : 'Come back in a bit — access refills over time.';
+    ? `Policy: ${policyName} — access opens up once your recent usage drops.`
+    : 'Come back in a bit — access opens up once your recent usage drops.';
 } else {
   qs('#title').textContent = "Time's Up";
   qs('#message').innerHTML =

@@ -8,7 +8,7 @@
     "storage"
   ],
   "background": {
-    "scripts": ["background/main.js"]
+    "scripts": ["shared/migrations.js", "background/main.js"]
   },
   "content_scripts": [{
     "matches": ["<all_urls>"],

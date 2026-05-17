@@ -8,6 +8,13 @@ if (browser && !browser.browserAction && browser.action) {
   browser.browserAction = browser.action;
 }
 
+// Pull in shared modules. MV3 (Chrome) runs this file as a service worker, so
+// importScripts is needed; MV2 (Firefox) loads them via the manifest's
+// background.scripts array and importScripts is undefined.
+if (typeof importScripts === 'function') {
+  importScripts('/shared/migrations.js');
+}
+
 /***************
  * Constants
  ***************/
@@ -20,14 +27,15 @@ const MAX_EXTENSIONS = 1;
  * State
  *
  * policies: [{id, name, domains: [string], rules: [Rule]}]
- *   Rule: {id, type: 'daily',  minutes}
- *       | {id, type: 'bucket', capacityMin, windowMin}
- * usage:           {[domain]: {[minute]: seconds}}        — today only, this device
- * allUsage (disk): {[date]: {[domain]: {[minute]: seconds}}} — full local history
- * usageRemoteToday:{[deviceId]: {[domain]: {[minute]: seconds}}}
- *                  — siblings' today-slice, refreshed on each sync, used for
- *                    cross-device daily-cap evaluation
- * buckets:         {[ruleId]: {tokens, lastRefillMs, cap}}
+ *   Rule: {id, type: 'daily',   minutes}
+ *       | {id, type: 'sliding', minutes, windowMin}
+ * usage:                {[domain]: {[minute]: seconds}}        — today, this device
+ * usageYesterday:       {[domain]: {[minute]: seconds}}        — yesterday, this device
+ *                       (needed so sliding windows can straddle midnight)
+ * allUsage (disk):      {[date]: {[domain]: {[minute]: seconds}}} — full local history
+ * usageRemoteToday:     {[deviceId]: {[domain]: {[minute]: seconds}}}
+ * usageRemoteYesterday: {[deviceId]: {[domain]: {[minute]: seconds}}}
+ *                       — siblings' recent slices, refreshed on each sync
  * ext_<date>_<ruleId>: number
  *
  * Tracked domains are the union of all policy.domains — sites are not stored.
@@ -35,26 +43,31 @@ const MAX_EXTENSIONS = 1;
 
 let policies = [];
 let usage = {};
+let usageYesterday = {};
 let usageRemoteToday = {};
-let buckets = {};
+let usageRemoteYesterday = {};
 let dateKey = getDateKey();
 let activeTabId = null;
 let trackedDomain = null;
 let ticker = null;
 let dirty = false;
-let bucketsDirty = false;
 
 /***************
  * Utilities
  ***************/
 
-function getDateKey() {
-  const d = new Date();
+function getDateKey(d = new Date()) {
   return [
     d.getFullYear(),
     String(d.getMonth() + 1).padStart(2, '0'),
     String(d.getDate()).padStart(2, '0'),
   ].join('-');
+}
+
+function getYesterdayKey(now = new Date()) {
+  const d = new Date(now);
+  d.setDate(d.getDate() - 1);
+  return getDateKey(d);
 }
 
 function getMinuteOfDay() {
@@ -78,6 +91,37 @@ function todayDomainSeconds(domain) {
   let total = sumDomainEntry(usage[domain]);
   for (const today of Object.values(usageRemoteToday)) {
     total += sumDomainEntry(today[domain]);
+  }
+  return total;
+}
+
+// Seconds recorded for (domain, minute) at the given slot, summed across local
+// + every device's shard for that slot. `slot` is 'today' or 'yesterday'.
+function minuteSecondsAt(domain, slot, minute) {
+  const local = slot === 'yesterday' ? usageYesterday : usage;
+  const remote = slot === 'yesterday' ? usageRemoteYesterday : usageRemoteToday;
+  let total = 0;
+  const localEntry = local[domain];
+  if (localEntry && typeof localEntry === 'object') total += localEntry[minute] || 0;
+  for (const shard of Object.values(remote)) {
+    const e = shard[domain];
+    if (e && typeof e === 'object') total += e[minute] || 0;
+  }
+  return total;
+}
+
+// Sum of seconds spent on `domains` in the trailing `windowMin` wall-clock
+// minutes (inclusive of the current minute). Straddles midnight by reaching
+// into yesterday's slot.
+function slidingWindowSeconds(domains, windowMin) {
+  const now = new Date();
+  const curMin = now.getHours() * 60 + now.getMinutes();
+  let total = 0;
+  for (let i = 0; i < windowMin; i++) {
+    const off = curMin - i;
+    const slot = off < 0 ? 'yesterday' : 'today';
+    const minute = off < 0 ? off + 1440 : off;
+    for (const d of domains) total += minuteSecondsAt(d, slot, minute);
   }
   return total;
 }
@@ -156,82 +200,6 @@ function badgeColor(ratio) {
 }
 
 /***************
- * Migration
- *
- * Old shapes:
- *   limits = [{id, type, ...config, domains}]            (multi-domain limits)
- *   sites  = [{domain, limits: [...]}]                   (per-site limits)
- *   sites  = [{domain, daily_limit_minutes}]             (oldest)
- *
- * New shape: policies = [{id, name, domains, rules}].
- * Bucket state and ext_ keys are keyed by rule.id — preserve incoming ids
- * so existing fill levels and today's extension counts survive the upgrade.
- ***************/
-
-function migrate(rawSites, rawLimits, rawPolicies) {
-  if (Array.isArray(rawPolicies)) {
-    return { policies: rawPolicies, changed: false };
-  }
-
-  const out = [];
-  let n = 0;
-
-  if (Array.isArray(rawLimits)) {
-    for (const lim of rawLimits) {
-      n++;
-      let rule;
-      if (lim.type === 'daily') {
-        rule = { id: lim.id || newId(), type: 'daily', minutes: lim.minutes };
-      } else if (lim.type === 'bucket') {
-        rule = {
-          id: lim.id || newId(),
-          type: 'bucket',
-          capacityMin: lim.capacityMin,
-          windowMin: lim.windowMin,
-        };
-      } else continue;
-      out.push({
-        id: newId(),
-        name: `Policy ${n}`,
-        domains: (lim.domains || []).slice(),
-        rules: [rule],
-      });
-    }
-    return { policies: out, changed: true };
-  }
-
-  for (const s of rawSites || []) {
-    const inline = Array.isArray(s.limits)
-      ? s.limits
-      : typeof s.daily_limit_minutes === 'number'
-        ? [{ type: 'daily', minutes: s.daily_limit_minutes }]
-        : [];
-    for (const l of inline) {
-      n++;
-      let rule;
-      if (l.type === 'daily') {
-        rule = { id: newId(), type: 'daily', minutes: l.minutes };
-      } else if (l.type === 'bucket') {
-        rule = {
-          id: newId(),
-          type: 'bucket',
-          capacityMin: l.capacityMin,
-          windowMin: l.windowMin,
-        };
-      } else continue;
-      out.push({
-        id: newId(),
-        name: `Policy ${n}`,
-        domains: [s.domain],
-        rules: [rule],
-      });
-    }
-  }
-
-  return { policies: out, changed: true };
-}
-
-/***************
  * Storage
  ***************/
 
@@ -245,35 +213,21 @@ async function ensureDeviceId() {
 
 async function load() {
   await ensureDeviceId();
-  const data = await browser.storage.local.get([
-    'sites',
-    'limits',
-    'policies',
-    'usage',
-    'usage_remote_today',
-    'buckets',
-  ]);
-  const m = migrate(data.sites, data.limits, data.policies);
-  policies = m.policies;
+  policies = await runMigrations(browser.storage.local);
 
+  const data = await browser.storage.local.get(['usage', 'usage_remote_today']);
   const allUsage = data.usage || {};
   usage = allUsage[dateKey] || {};
+  usageYesterday = allUsage[getYesterdayKey()] || {};
 
   // usage_remote_today is keyed by date as well so a stale day rolls off cleanly.
+  // Despite the name, we keep both today's and yesterday's slices so sliding
+  // windows can straddle midnight.
   const remoteByDate = data.usage_remote_today || {};
   usageRemoteToday = remoteByDate[dateKey] || {};
-  buckets = data.buckets || {};
-
-  if (m.changed) {
-    await browser.storage.local.set({ policies });
-    const stale = [];
-    if (data.sites !== undefined) stale.push('sites');
-    if (data.limits !== undefined) stale.push('limits');
-    if (stale.length) await browser.storage.local.remove(stale);
-  }
+  usageRemoteYesterday = remoteByDate[getYesterdayKey()] || {};
 
   pruneExtKeys();
-  pruneBuckets();
 }
 
 async function pruneExtKeys() {
@@ -284,28 +238,12 @@ async function pruneExtKeys() {
   if (stale.length) await browser.storage.local.remove(stale);
 }
 
-function pruneBuckets() {
-  const valid = new Set();
-  for (const p of livePolicies()) {
-    for (const r of p.rules) {
-      if (r.type === 'bucket') valid.add(r.id);
-    }
-  }
-  for (const k of Object.keys(buckets)) {
-    if (!valid.has(k)) {
-      delete buckets[k];
-      bucketsDirty = true;
-    }
-  }
-}
-
 async function flush() {
-  if (!dirty && !bucketsDirty) return;
+  if (!dirty) return;
   const { usage: allUsage = {} } = await browser.storage.local.get('usage');
   allUsage[dateKey] = usage;
-  await browser.storage.local.set({ usage: allUsage, buckets });
+  await browser.storage.local.set({ usage: allUsage });
   dirty = false;
-  bucketsDirty = false;
 }
 
 /***************
@@ -316,38 +254,6 @@ async function getExtensionCount(ruleId) {
   const key = `ext_${dateKey}_${ruleId}`;
   const data = await browser.storage.local.get(key);
   return data[key] || 0;
-}
-
-/***************
- * Bucket state
- ***************/
-
-function refillBucket(rule) {
-  const cap = rule.capacityMin * 60;
-  const windowSec = rule.windowMin * 60;
-  const rate = windowSec > 0 ? cap / windowSec : 0;
-  const now = Date.now();
-  let state = buckets[rule.id];
-  if (!state || state.cap !== cap) {
-    state = { tokens: cap, lastRefillMs: now, cap };
-    buckets[rule.id] = state;
-    bucketsDirty = true;
-    return state;
-  }
-  const elapsed = (now - state.lastRefillMs) / 1000;
-  if (elapsed > 0) {
-    state.tokens = Math.min(cap, state.tokens + elapsed * rate);
-    state.lastRefillMs = now;
-    bucketsDirty = true;
-  }
-  return state;
-}
-
-function drainBucket(rule) {
-  const state = refillBucket(rule);
-  state.tokens = Math.max(0, state.tokens - 1);
-  bucketsDirty = true;
-  return state;
 }
 
 /***************
@@ -375,25 +281,22 @@ async function evalRule(policy, rule) {
       active,
     };
   }
-  if (rule.type === 'bucket') {
-    const state = refillBucket(rule);
-    const cap = rule.capacityMin * 60;
-    const windowSec = rule.windowMin * 60;
-    // Drain is 1 tok/sec while on the tab; refill is cap/windowSec tok/sec.
-    // Net wall-seconds-until-empty = tokens / (1 - cap/windowSec).
-    // If refill ≥ drain (cap ≥ windowSec), the bucket never empties while active.
-    const netDrain = windowSec > 0 ? 1 - cap / windowSec : 1;
-    const remainingSec = netDrain > 0 ? state.tokens / netDrain : Infinity;
+  if (rule.type === 'sliding') {
+    const limitSec = rule.minutes * 60;
+    const sec = slidingWindowSeconds(policy.domains, rule.windowMin);
+    // `remainingSec` here is the worst-case time-to-block (assumes the oldest
+    // minutes in the window don't slide off freeing capacity). Good enough for
+    // the ≤15s warning overlay — it errs on the side of warning slightly early.
     return {
       policyId: policy.id,
       policyName: policy.name,
       ruleId: rule.id,
-      type: 'bucket',
-      blocked: active && cap > 0 && state.tokens <= 0,
-      progress: cap > 0 ? 1 - state.tokens / cap : 1,
-      current: cap - state.tokens,
-      limit: cap,
-      remainingSec,
+      type: 'sliding',
+      blocked: active && limitSec > 0 && sec >= limitSec,
+      progress: limitSec > 0 ? sec / limitSec : 1,
+      current: sec,
+      limit: limitSec,
+      remainingSec: Math.max(0, limitSec - sec),
       domains: policy.domains.slice(),
       active,
     };
@@ -428,9 +331,13 @@ function tightestProgress(results) {
 function checkDayRollover() {
   const now = getDateKey();
   if (now !== dateKey) {
-    dateKey = now;
+    // Shift today → yesterday so sliding windows that straddle the midnight
+    // boundary still see the previous day's tail.
+    usageYesterday = usage;
     usage = {};
+    usageRemoteYesterday = usageRemoteToday;
     usageRemoteToday = {};
+    dateKey = now;
     return true;
   }
   return false;
@@ -452,14 +359,6 @@ async function tick() {
   }
   bucket[minute] = (bucket[minute] || 0) + 1;
   dirty = true;
-
-  const applicable = policiesForDomain(trackedDomain);
-  for (const p of applicable) {
-    if (!isPolicyActive(p)) continue;
-    for (const r of p.rules) {
-      if (r.type === 'bucket') drainBucket(r);
-    }
-  }
 
   const results = await evalDomainRules(trackedDomain);
   const sec = todayDomainSeconds(trackedDomain);
@@ -576,12 +475,12 @@ browser.windows.onFocusChanged.addListener((wid) => {
 browser.storage.onChanged.addListener((changes) => {
   if (changes.policies) {
     policies = changes.policies.newValue || [];
-    pruneBuckets();
     if (activeTabId) evaluate(activeTabId);
   }
   if (changes.usage_remote_today) {
     const byDate = changes.usage_remote_today.newValue || {};
     usageRemoteToday = byDate[dateKey] || {};
+    usageRemoteYesterday = byDate[getYesterdayKey()] || {};
     if (activeTabId) evaluate(activeTabId);
   }
 });

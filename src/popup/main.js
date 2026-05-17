@@ -18,7 +18,11 @@ async function loadCurrentTab() {
   try {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     if (!tabs[0] || !tabs[0].url) return;
-    currentHost = new URL(tabs[0].url).hostname || null;
+    const u = new URL(tabs[0].url);
+    // Only real web pages are trackable. Excludes chrome://, about:,
+    // chrome-extension://, moz-extension://, file://, data:, etc.
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+    currentHost = u.hostname || null;
   } catch {
     currentHost = null;
   }
@@ -51,18 +55,14 @@ function fmtMin(sec) {
 
 function ruleKindLabel(rule) {
   if (rule.type === 'daily') return 'Daily';
-  if (rule.type === 'bucket') return `Rate · ${rule.capacityMin}m / ${rule.windowMin}m`;
+  if (rule.type === 'sliding') return `Rate · ${rule.minutes}m / ${rule.windowMin}m`;
   return '';
 }
 
 function ruleStat(e) {
   if (!e) return '—';
-  if (e.type === 'daily') {
+  if (e.type === 'daily' || e.type === 'sliding') {
     return `${fmtMin(e.current)} / ${fmtMin(e.limit)}`;
-  }
-  if (e.type === 'bucket') {
-    const remaining = Math.max(0, e.limit - e.current);
-    return `${fmtMin(remaining)} / ${fmtMin(e.limit)} left`;
   }
   return '';
 }
